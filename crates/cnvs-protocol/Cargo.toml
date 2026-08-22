@@ -1,0 +1,26 @@
+[package]
+name = "cnvs-protocol"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+
+[lints.clippy]
+# Start with standard pedantic rules
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# Deny explicit footguns in core logic
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny" # Forces safe checking (.get())
+print_stdout = "deny" # Forces tracing/logging abstractions
+print_stderr = "deny"

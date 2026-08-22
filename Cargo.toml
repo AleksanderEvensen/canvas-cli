@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/cnvs", "crates/cnvs-daemon", "crates/cnvs-protocol"]
+resolver = "2"

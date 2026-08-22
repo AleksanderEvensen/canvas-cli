@@ -1,0 +1,70 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Request {
+  Status,
+  Stop,
+  Api(ApiRequest),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiRequest {
+  pub method: String,
+  pub url: String,
+  pub headers: Vec<Header>,
+  pub body: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Header {
+  pub name: String,
+  pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonState {
+  Starting,
+  Running,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Response {
+  Status {
+    state: DaemonState,
+    pid: u32,
+    profile: String,
+  },
+  Stopped,
+  Api {
+    status: u16,
+    status_text: String,
+    body: String,
+  },
+  Error {
+    message: String,
+  },
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn request_round_trips() {
+    let json = serde_json::to_string(&Request::Api(ApiRequest {
+      method: "POST".into(),
+      url: "https://canvas.example/api".into(),
+      headers: vec![],
+      body: Some("hello\nworld".into()),
+    }))
+    .unwrap();
+
+    let Request::Api(request) = serde_json::from_str(&json).unwrap() else {
+      panic!("wrong request variant");
+    };
+    assert_eq!(request.body.as_deref(), Some("hello\nworld"));
+  }
+}
