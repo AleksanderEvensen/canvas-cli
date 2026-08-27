@@ -33,6 +33,7 @@ cnvs api POST https://canvas.example/api/v1/items \
   --header 'content-type: application/json' \
   --body '{"name":"Example"}'
 cnvs api PUT https://canvas.example/upload --body-file payload.json
+cnvs api GET https://canvas.example/files/123/download --output submission.zip
 ```
 
 `--query key=value` and `--header 'Name: value'` can be repeated.
@@ -53,9 +54,9 @@ cnvs gql \
 
 `--variables` accepts an inline JSON object. GraphQL mutations are allowed.
 
-Successful response bodies are written unchanged to stdout as UTF-8 text. HTTP 4xx/5xx bodies are also written to stdout, but `cnvs` exits nonzero. Use `--verbose` to print the HTTP status and daemon auto-start notices to stderr.
+Successful text response bodies are written unchanged to stdout. HTTP 4xx/5xx bodies are also written to stdout, but `cnvs` exits nonzero. Use `--verbose` to print the HTTP status and daemon auto-start notices to stderr.
 
-Binary response bodies are not supported yet.
+Use `--output PATH` for binary downloads. Downloads use Chrome's network protocol instead of page `fetch`, so cross-origin redirects are allowed. Download mode supports GET requests without custom headers or a request body.
 
 ## Daemon commands
 

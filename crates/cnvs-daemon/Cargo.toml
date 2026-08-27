@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 cnvs-protocol = { path = "../cnvs-protocol" }
 dirs = "6"
 futures-util = "0.3"

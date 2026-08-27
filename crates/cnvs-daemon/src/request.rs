@@ -1,6 +1,7 @@
 use std::{collections::HashSet, time::Duration};
 
 use anyhow::{bail, Context, Result};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use cnvs_protocol::ApiRequest;
 use serde_json::{json, Value};
 use tokio::time::{timeout, Instant};
@@ -14,6 +15,7 @@ pub(crate) struct HttpResponse {
   pub(crate) status: u16,
   pub(crate) status_text: String,
   pub(crate) body: String,
+  pub(crate) body_base64: bool,
 }
 
 pub(crate) async fn execute(
@@ -83,7 +85,15 @@ pub(crate) async fn execute(
     .context("Target.attachToTarget returned no sessionId")?
     .to_owned();
 
-  let result = run_in_target(cdp, request, &wanted_origin, &session_id, created, deadline).await;
+  let result = async {
+    prepare_target(cdp, &wanted_origin, &session_id, created, deadline).await?;
+    if request.download {
+      download_in_target(cdp, request, &session_id, deadline).await
+    } else {
+      run_in_target(cdp, request, &session_id, deadline).await
+    }
+  }
+  .await;
 
   let _ = timeout(
     Duration::from_secs(5),
@@ -98,14 +108,13 @@ pub(crate) async fn execute(
   result
 }
 
-async fn run_in_target(
+async fn prepare_target(
   cdp: &mut ChromeDeveloperProtocol,
-  request: &ApiRequest,
   wanted_origin: &str,
   session_id: &str,
   created: bool,
   deadline: Instant,
-) -> Result<HttpResponse> {
+) -> Result<()> {
   if created {
     cdp
       .call_before(deadline, "Page.enable", json!({}), Some(session_id))
@@ -136,7 +145,15 @@ async fn run_in_target(
       "expected a page on {wanted_origin}, but Chrome ended up on {current_origin}; the site may have redirected to login/SSO"
     );
   }
+  Ok(())
+}
 
+async fn run_in_target(
+  cdp: &mut ChromeDeveloperProtocol,
+  request: &ApiRequest,
+  session_id: &str,
+  deadline: Instant,
+) -> Result<HttpResponse> {
   let url = serde_json::to_string(&request.url)?;
   let method = serde_json::to_string(&request.method)?;
   let headers = serde_json::to_string(&request.headers)?;
@@ -181,6 +198,91 @@ async fn run_in_target(
       .context("fetch returned no valid status")?,
     status_text: result["statusText"].as_str().unwrap_or_default().to_owned(),
     body: result["body"].as_str().unwrap_or_default().to_owned(),
+    body_base64: false,
+  })
+}
+
+async fn download_in_target(
+  cdp: &mut ChromeDeveloperProtocol,
+  request: &ApiRequest,
+  session_id: &str,
+  deadline: Instant,
+) -> Result<HttpResponse> {
+  if request.method != "GET" || request.body.is_some() || !request.headers.is_empty() {
+    bail!("downloads support GET requests without custom headers or a request body");
+  }
+
+  let frame_tree = cdp
+    .call_before(deadline, "Page.getFrameTree", json!({}), Some(session_id))
+    .await?;
+  let frame_id = frame_tree["frameTree"]["frame"]["id"]
+    .as_str()
+    .context("Page.getFrameTree returned no frame id")?;
+  let loaded = cdp
+    .call_before(
+      deadline,
+      "Network.loadNetworkResource",
+      json!({
+        "frameId": frame_id,
+        "url": request.url,
+        "options": { "disableCache": false, "includeCredentials": true },
+      }),
+      Some(session_id),
+    )
+    .await?;
+  let resource = &loaded["resource"];
+  if resource["success"].as_bool() != Some(true) {
+    bail!(
+      "download failed: {}",
+      resource["netErrorName"]
+        .as_str()
+        .unwrap_or("unknown network error")
+    );
+  }
+
+  let mut bytes = Vec::new();
+  if let Some(handle) = resource["stream"].as_str() {
+    loop {
+      let chunk = cdp
+        .call_before(
+          deadline,
+          "IO.read",
+          json!({ "handle": handle, "size": 1024 * 1024 }),
+          Some(session_id),
+        )
+        .await?;
+      let data = chunk["data"].as_str().unwrap_or_default();
+      if chunk["base64Encoded"].as_bool() == Some(true) {
+        bytes.extend(
+          STANDARD
+            .decode(data)
+            .context("Chrome returned invalid base64 data")?,
+        );
+      } else {
+        bytes.extend_from_slice(data.as_bytes());
+      }
+      if chunk["eof"].as_bool() == Some(true) {
+        break;
+      }
+    }
+    cdp
+      .call_before(
+        deadline,
+        "IO.close",
+        json!({ "handle": handle }),
+        Some(session_id),
+      )
+      .await?;
+  }
+
+  Ok(HttpResponse {
+    status: resource["httpStatusCode"]
+      .as_u64()
+      .and_then(|status| status.try_into().ok())
+      .unwrap_or(200),
+    status_text: String::new(),
+    body: STANDARD.encode(bytes),
+    body_base64: true,
   })
 }
 

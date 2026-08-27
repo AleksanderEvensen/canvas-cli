@@ -14,6 +14,8 @@ pub struct ApiRequest {
   pub url: String,
   pub headers: Vec<Header>,
   pub body: Option<String>,
+  #[serde(default)]
+  pub download: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,6 +44,8 @@ pub enum Response {
     status: u16,
     status_text: String,
     body: String,
+    #[serde(default)]
+    body_base64: bool,
   },
   Error {
     message: String,
@@ -59,6 +63,7 @@ mod tests {
       url: "https://canvas.example/api".into(),
       headers: vec![],
       body: Some("hello\nworld".into()),
+      download: false,
     }))
     .unwrap();
 
@@ -66,5 +71,6 @@ mod tests {
       panic!("wrong request variant");
     };
     assert_eq!(request.body.as_deref(), Some("hello\nworld"));
+    assert!(!request.download);
   }
 }

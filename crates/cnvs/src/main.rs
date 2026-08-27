@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use clap::{Args, Parser, Subcommand};
 use cnvs_protocol::{ApiRequest, DaemonState, Header, Request, Response};
 use serde_json::{json, Value};
@@ -57,6 +58,9 @@ struct ApiArgs {
 
   #[arg(long, conflicts_with = "body")]
   body_file: Option<PathBuf>,
+
+  #[arg(long, conflicts_with_all = ["body", "body_file"])]
+  output: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -115,8 +119,11 @@ fn main() {
 fn run() -> Result<i32> {
   let cli = Cli::parse();
   match cli.command {
-    Command::Api(args) => run_request(build_api_request(args)?, cli.verbose),
-    Command::Gql(args) => run_request(build_gql_request(args)?, cli.verbose),
+    Command::Api(args) => {
+      let output = args.output.clone();
+      run_request(build_api_request(args)?, cli.verbose, output)
+    }
+    Command::Gql(args) => run_request(build_gql_request(args)?, cli.verbose, None),
 
     Command::Daemon { command } => match command {
       DaemonCommand::Start {
@@ -195,6 +202,7 @@ fn build_api_request(args: ApiArgs) -> Result<ApiRequest> {
       (None, Some(path)) => Some(read_input(&path)?),
       (Some(_), Some(_)) => unreachable!("clap cli parsing rejects conflicting body options"),
     },
+    download: args.output.is_some(),
   })
 }
 
@@ -230,10 +238,11 @@ fn build_gql_request(args: GqlArgs) -> Result<ApiRequest> {
         "query": query,
         "variables": variables,
     }))?),
+    download: false,
   })
 }
 
-fn run_request(request: ApiRequest, verbose: bool) -> Result<i32> {
+fn run_request(request: ApiRequest, verbose: bool, output: Option<PathBuf>) -> Result<i32> {
   let (_, started) = ensure_daemon_running(None)?;
 
   if started && verbose {
@@ -250,15 +259,33 @@ fn run_request(request: ApiRequest, verbose: bool) -> Result<i32> {
       status,
       status_text,
       body,
+      body_base64,
     } => {
-      print!("{body}");
-      io::stdout().flush()?;
       if verbose {
         eprintln!("{status} {status_text}");
       }
       if !(200..300).contains(&status) {
+        if !body_base64 {
+          print!("{body}");
+        }
         eprintln!("HTTP {status} {status_text}");
         return Ok(1);
+      }
+
+      if let Some(path) = output {
+        let bytes = STANDARD
+          .decode(body)
+          .context("daemon returned invalid base64 data")?;
+        fs::write(&path, bytes).with_context(|| format!("could not write {}", path.display()))?;
+      } else if body_base64 {
+        io::stdout().write_all(
+          &STANDARD
+            .decode(body)
+            .context("daemon returned invalid base64 data")?,
+        )?;
+      } else {
+        print!("{body}");
+        io::stdout().flush()?;
       }
       Ok(0)
     }
@@ -492,11 +519,13 @@ mod tests {
       headers: vec![],
       body: None,
       body_file: None,
+      output: Some("submission.zip".into()),
     })
     .unwrap();
 
     assert!(request.url.contains("existing=yes"));
     assert_eq!(request.url.matches("include%5B%5D=").count(), 2);
+    assert!(request.download);
   }
 
   #[test]
