@@ -3,6 +3,10 @@ name = "cnvs-daemon"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+write-requests = []
+
 [dependencies]
 anyhow = "1"
 base64 = "0.22"

@@ -13,6 +13,7 @@ use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use clap::{Args, Parser, Subcommand};
 use cnvs_protocol::{ApiRequest, DaemonState, Header, Request, Response};
+#[cfg(feature = "write-requests")]
 use serde_json::{json, Value};
 use url::Url;
 
@@ -35,6 +36,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
   Api(ApiArgs),
+  #[cfg(feature = "write-requests")]
   Gql(GqlArgs),
   Daemon {
     #[command(subcommand)]
@@ -123,6 +125,7 @@ fn run() -> Result<i32> {
       let output = args.output.clone();
       run_request(build_api_request(args)?, cli.verbose, output)
     }
+    #[cfg(feature = "write-requests")]
     Command::Gql(args) => run_request(build_gql_request(args)?, cli.verbose, None),
 
     Command::Daemon { command } => match command {
@@ -206,6 +209,7 @@ fn build_api_request(args: ApiArgs) -> Result<ApiRequest> {
   })
 }
 
+#[cfg(feature = "write-requests")]
 fn build_gql_request(args: GqlArgs) -> Result<ApiRequest> {
   validate_url(&args.url)?;
   let query = match args.file {
@@ -474,6 +478,7 @@ fn parse_key_value(value: &str) -> std::result::Result<KeyValue, String> {
   })
 }
 
+#[cfg(feature = "write-requests")]
 fn parse_variables(value: &str) -> Result<Value> {
   let value: Value = serde_json::from_str(value).context("invalid GraphQL variables JSON")?;
   if !value.is_object() {

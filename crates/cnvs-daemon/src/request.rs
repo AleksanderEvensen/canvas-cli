@@ -23,6 +23,7 @@ pub(crate) async fn execute(
   request: &ApiRequest,
   owned_targets: &mut HashSet<String>,
 ) -> Result<HttpResponse> {
+  ensure_method_allowed(&request.method)?;
   let deadline = Instant::now() + REQUEST_TIMEOUT;
   let url = Url::parse(&request.url).context("invalid request URL")?;
   let wanted_origin = origin(&url)?;
@@ -323,6 +324,19 @@ pub(crate) async fn close_owned_targets(
   }
 }
 
+#[cfg(not(feature = "write-requests"))]
+fn ensure_method_allowed(method: &str) -> Result<()> {
+  if !method.eq_ignore_ascii_case("GET") {
+    bail!("only GET requests are enabled; reinstall with --features write-requests to enable write requests");
+  }
+  Ok(())
+}
+
+#[cfg(feature = "write-requests")]
+fn ensure_method_allowed(_method: &str) -> Result<()> {
+  Ok(())
+}
+
 fn origin(url: &Url) -> Result<String> {
   if !matches!(url.scheme(), "http" | "https") {
     bail!("only http:// and https:// URLs are supported");
@@ -345,5 +359,12 @@ mod tests {
       "https://canvas.example"
     );
     assert!(origin(&Url::parse("file:///tmp/test").unwrap()).is_err());
+  }
+
+  #[cfg(not(feature = "write-requests"))]
+  #[test]
+  fn allows_only_get_when_writes_are_disabled() {
+    assert!(ensure_method_allowed("GET").is_ok());
+    assert!(ensure_method_allowed("PATCH").is_err());
   }
 }

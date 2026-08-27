@@ -8,6 +8,11 @@
 cargo install --git https://github.com/AleksanderEvensen/canvas-cli.git cnvs
 # Or, from a local checkout:
 cargo install --path crates/cnvs
+
+# To include POST, PUT, DELETE, and GraphQL support:
+cargo install --path crates/cnvs --features write-requests
+# or
+cargo install --git https://github.com/AleksanderEvensen/canvas-cli.git cnvs --features write-requests
 ```
 
 ## Browser setup
@@ -28,19 +33,16 @@ The daemon starts automatically if not already running (user will be asked to ap
 
 ```sh
 cnvs api GET https://canvas.example/api/v1/users/self
-cnvs api POST https://canvas.example/api/v1/items \
-  --query notify=true \
-  --header 'content-type: application/json' \
-  --body '{"name":"Example"}'
-cnvs api PUT https://canvas.example/upload --body-file payload.json
 cnvs api GET https://canvas.example/files/123/download --output submission.zip
 ```
 
 `--query key=value` and `--header 'Name: value'` can be repeated.
 
-Use `--body-file -` to read a body from stdin. Any Fetch-compatible HTTP method and HTTP(S) URL may be used.
+Use `--body-file -` to read a body from stdin. The default build only includes
+`GET` requests. To include write requests (`POST`, `PUT`, and `DELETE`), install
+with `--features write-requests`.
 
-GraphQL accepts a full endpoint URL. The query comes from stdin unless `--file` is provided:
+With the `write-requests` feature enabled, GraphQL accepts a full endpoint URL. The query comes from stdin unless `--file` is provided:
 
 ```sh
 printf 'mutation { updateThing { id } }' | \
@@ -52,7 +54,7 @@ cnvs gql \
   --variables-file variables.json
 ```
 
-`--variables` accepts an inline JSON object. GraphQL mutations are allowed.
+`--variables` accepts an inline JSON object.
 
 Successful text response bodies are written unchanged to stdout. HTTP 4xx/5xx bodies are also written to stdout, but `cnvs` exits nonzero. Use `--verbose` to print the HTTP status and daemon auto-start notices to stderr.
 
