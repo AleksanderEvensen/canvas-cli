@@ -3,6 +3,8 @@ use clap::Parser;
 mod commands;
 mod utilities;
 
+pub(crate) static READ_ONLY_ACTIONS: bool = !cfg!(feature = "write-requests");
+
 #[derive(Parser)]
 #[command(
   name = "cnvs",

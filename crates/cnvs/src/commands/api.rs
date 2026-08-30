@@ -48,6 +48,13 @@ pub(crate) fn run(args: ApiArgs, verbose: bool) -> Result<i32> {
     query.extend_pairs(args.query.iter().map(|v| (&v.name, &v.value)));
   }
 
+  if crate::READ_ONLY_ACTIONS && !args.method.eq_ignore_ascii_case("get") {
+    bail!(
+      "{} requests is not permitted, only GET requests are allowed",
+      args.method.to_uppercase()
+    )
+  }
+
   let mut request = ApiRequestBuilder::new(args.method, url);
 
   request

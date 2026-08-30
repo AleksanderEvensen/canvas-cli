@@ -1,9 +1,8 @@
+use crate::READ_ONLY_ACTIONS;
 use anyhow::Context;
 use anyhow::{bail, Result};
 use clap::Subcommand;
 use cnvs_config::Config;
-
-static READ_ONLY_ACTIONS: bool = !cfg!(feature = "write-requests");
 
 #[derive(Subcommand)]
 pub enum AgentCommand {
