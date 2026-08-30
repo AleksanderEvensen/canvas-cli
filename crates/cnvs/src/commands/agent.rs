@@ -1,3 +1,4 @@
+use anyhow::Context;
 use anyhow::{bail, Result};
 use clap::Subcommand;
 use cnvs_config::Config;
@@ -48,5 +49,3 @@ fn skills(slug: Option<String>) -> Result<i32> {
   }
   Ok(0)
 }
-
-use anyhow::Context;

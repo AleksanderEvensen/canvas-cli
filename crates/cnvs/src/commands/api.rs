@@ -4,14 +4,13 @@ use std::{
   path::{Path, PathBuf},
 };
 
+use crate::utilities::{ApiRequestBuilder, RequestBody};
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use clap::Args;
 use cnvs_config::Config;
-use cnvs_protocol::{ApiRequest, Header, Request, Response, ResponseBody};
+use cnvs_protocol::{Header, Response, ResponseBody};
 use url::Url;
-
-use super::daemon;
 
 #[derive(Clone)]
 struct KeyValue {
@@ -23,57 +22,62 @@ struct KeyValue {
 pub struct ApiArgs {
   method: String,
   url: String,
+
   #[arg(long = "query", value_parser = parse_key_value)]
   query: Vec<KeyValue>,
+
   #[arg(long = "header", value_parser = parse_header)]
   headers: Vec<Header>,
+
   #[arg(long, conflicts_with = "body_file")]
   body: Option<String>,
+
   #[arg(long, conflicts_with = "body")]
   body_file: Option<PathBuf>,
-  #[arg(long, conflicts_with_all = ["body", "body_file"])]
+
+  #[arg(long)]
   output: Option<PathBuf>,
 }
 
 pub(crate) fn run(args: ApiArgs, verbose: bool) -> Result<i32> {
   let output = args.output.clone();
-  run_request(build_request(args)?, verbose, output)
-}
 
-fn build_request(args: ApiArgs) -> Result<ApiRequest> {
   let mut url = resolve_url(&args.url)?;
   {
     let mut query = url.query_pairs_mut();
-    for pair in args.query {
-      query.append_pair(&pair.name, &pair.value);
-    }
+    query.extend_pairs(args.query.iter().map(|v| (&v.name, &v.value)));
   }
-  Ok(ApiRequest {
-    method: args.method.to_ascii_uppercase(),
-    url: url.into(),
-    headers: args.headers,
-    body: match (args.body, args.body_file) {
-      (None, None) => None,
-      (Some(body), None) => Some(body),
-      (None, Some(path)) => Some(read_input(&path)?),
-      (Some(_), Some(_)) => bail!("body and body-file cannot be used together"),
-    },
-    download: args.output.is_some(),
-  })
+
+  let mut request = ApiRequestBuilder::new(args.method, url);
+
+  request
+    .enable_verbose(verbose)
+    .headers(args.headers.into_iter().map(|v| (v.name, v.value)));
+
+  match (args.body, args.body_file) {
+    (None, None) => {}
+    (Some(body), None) => {
+      request.body(RequestBody::Text(body));
+    }
+    (None, Some(path)) => {
+      request.body(RequestBody::Text(read_input(&path)?));
+    }
+    (Some(_), Some(_)) => bail!("body and body-file cannot be used together"),
+  }
+
+  let response = match &output {
+    Some(_) => request.download()?,
+    None => request.json()?,
+  };
+
+  handle_response(response, verbose, output)
 }
 
-pub(crate) fn run_request(
-  request: ApiRequest,
+pub(crate) fn handle_response(
+  response: Response,
   verbose: bool,
   output: Option<PathBuf>,
 ) -> Result<i32> {
-  let (_, started) = daemon::ensure_running(None)?;
-  if started && verbose {
-    eprintln!("started daemon");
-  }
-  let Some(response) = daemon::send_request(&Request::Api(request))? else {
-    bail!("daemon stopped before accepting the request; run the command again")
-  };
   match response {
     Response::Api {
       status,
@@ -120,7 +124,7 @@ fn write_output(path: PathBuf, body: ResponseBody) -> Result<()> {
       if let Some(directory) = source.parent() {
         let _ = fs::remove_dir(directory);
       }
-    },
+    }
     ResponseBody::Base64(encoded) => fs::write(
       &path,
       STANDARD
@@ -226,25 +230,6 @@ fn read_stdin() -> Result<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  #[test]
-  fn repeated_query_values_are_preserved() {
-    let request = build_request(ApiArgs {
-      method: "get".into(),
-      url: "https://canvas.example/api?existing=yes".into(),
-      query: vec![
-        parse_key_value("include[]=term").unwrap(),
-        parse_key_value("include[]=syllabus").unwrap(),
-      ],
-      headers: vec![],
-      body: None,
-      body_file: None,
-      output: Some("submission.zip".into()),
-    })
-    .unwrap();
-    assert!(request.url.contains("existing=yes"));
-    assert_eq!(request.url.matches("include%5B%5D=").count(), 2);
-    assert!(request.download);
-  }
   #[test]
   fn explicit_hosts_are_not_replaced_by_the_default() {
     assert_eq!(

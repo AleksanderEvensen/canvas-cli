@@ -2,28 +2,27 @@ use std::{io::Read, path::PathBuf};
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
-use cnvs_protocol::{ApiRequest, Header};
 use serde_json::{json, Value};
 
 use super::api;
+use crate::utilities::{ApiRequestBuilder, RequestBody};
 
 #[derive(Args)]
 pub struct GqlArgs {
   #[arg(long)]
   url: String,
+
   #[arg(long)]
   file: Option<PathBuf>,
+
   #[arg(long, conflicts_with = "variables_file")]
   variables: Option<String>,
+
   #[arg(long, conflicts_with = "variables")]
   variables_file: Option<PathBuf>,
 }
 
 pub(crate) fn run(args: GqlArgs, verbose: bool) -> Result<i32> {
-  api::run_request(build_request(args)?, verbose, None)
-}
-
-fn build_request(args: GqlArgs) -> Result<ApiRequest> {
   let url = api::resolve_url(&args.url)?;
   let query = match args.file {
     Some(path) => api::read_input(&path)?,
@@ -42,19 +41,17 @@ fn build_request(args: GqlArgs) -> Result<ApiRequest> {
     (None, Some(path)) => parse_variables(&api::read_input(&path)?)?,
     (Some(_), Some(_)) => bail!("variables and variables-file cannot be used together"),
   };
-  Ok(ApiRequest {
-    method: "POST".into(),
-    url: url.into(),
-    headers: vec![Header {
-      name: "content-type".into(),
-      value: "application/json".into(),
-    }],
-    body: Some(serde_json::to_string(
-      &json!({ "query": query, "variables": variables }),
-    )?),
-    download: false,
-  })
+  let mut request = ApiRequestBuilder::new("POST", url);
+  request.enable_verbose(verbose);
+  request.body(RequestBody::json(json!({
+    "query": query,
+    "variables": variables,
+  }))?);
+
+  let response = request.json()?;
+  api::handle_response(response, verbose, None)
 }
+
 fn parse_variables(value: &str) -> Result<Value> {
   let value: Value = serde_json::from_str(value).context("invalid GraphQL variables JSON")?;
   if !value.is_object() {
@@ -62,4 +59,3 @@ fn parse_variables(value: &str) -> Result<Value> {
   }
   Ok(value)
 }
-

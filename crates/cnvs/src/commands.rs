@@ -1,10 +1,10 @@
 use anyhow::Result;
 use clap::Subcommand;
 
-mod agent;
-mod api;
-mod config;
-mod daemon;
+pub(crate) mod agent;
+pub(crate) mod api;
+pub(crate) mod config;
+pub(crate) mod daemon;
 
 #[cfg(feature = "write-requests")]
 mod gql;

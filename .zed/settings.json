@@ -1,3 +1,15 @@
 {
-  "tab_size": 2
+  "tab_size": 2,
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "cargo": {
+          "features": "all"
+        },
+        "check": {
+          "features": "all"
+        }
+      }
+    }
+  }
 }

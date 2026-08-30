@@ -15,6 +15,7 @@ clap = { version = "4", features = ["derive"] }
 cnvs-config = { path = "../cnvs-config" }
 cnvs-daemon = { path = "../cnvs-daemon" }
 cnvs-protocol = { path = "../cnvs-protocol" }
+serde = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 url = "2"

@@ -21,8 +21,11 @@ pub enum DaemonCommand {
     #[arg(long)]
     chrome_user_data_dir: Option<PathBuf>,
   },
+
   Stop,
+
   Status,
+
   #[command(name = "__run", hide = true)]
   Run {
     #[arg(long)]
@@ -202,8 +205,10 @@ fn check_profile(status: &Status, expected: Option<&Path>) -> Result<()> {
 
 pub(crate) fn send_request(request: &Request) -> Result<Option<Response>> {
   let path = cnvs_daemon::daemon_socket_path()?;
+
   let mut stream = match UnixStream::connect(&path) {
     Ok(stream) => stream,
+
     Err(error)
       if matches!(
         error.kind(),
@@ -212,18 +217,24 @@ pub(crate) fn send_request(request: &Request) -> Result<Option<Response>> {
     {
       return Ok(None)
     }
+
     Err(error) => {
       return Err(error).with_context(|| format!("could not connect to {}", path.display()))
     }
   };
+
   serde_json::to_writer(&mut stream, request)?;
+
   stream.write_all(b"\n")?;
+
   stream.shutdown(Shutdown::Write)?;
+
   let mut line = String::new();
   BufReader::new(stream).read_line(&mut line)?;
   if line.is_empty() {
     return Ok(None);
   }
+
   Ok(Some(
     serde_json::from_str(&line).context("invalid daemon response")?,
   ))
