@@ -6,7 +6,7 @@ use serde::Deserialize;
 const CONFIG_DIRECTORY: &str = "cnvs";
 const CONFIG_FILE: &str = "config.toml";
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, serde::Serialize)]
 pub struct Config {
   /// Additional Chrome user-data directories checked after the standard locations.
   #[serde(default)]
@@ -17,6 +17,15 @@ pub struct Config {
 }
 
 impl Config {
+  /// Serializes the configuration as TOML.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error when the configuration cannot be represented as TOML.
+  pub fn serialize(&self) -> Result<String> {
+    Ok(toml::to_string_pretty(self)?)
+  }
+
   /// Loads the user's configuration, or returns the default configuration when it does not exist.
   ///
   /// # Errors

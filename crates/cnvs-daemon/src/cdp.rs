@@ -120,9 +120,34 @@ impl ChromeDeveloperProtocol {
     method: &str,
     session_id: &str,
   ) -> Result<Value> {
+    self
+      .wait_for_event_matching(deadline, method, |event| {
+        event.get("sessionId").and_then(Value::as_str) == Some(session_id)
+      })
+      .await
+  }
+
+  pub(crate) async fn wait_for_browser_event_before(
+    &mut self,
+    deadline: Instant,
+    method: &str,
+  ) -> Result<Value> {
+    self
+      .wait_for_event_matching(deadline, method, |_| true)
+      .await
+  }
+
+  async fn wait_for_event_matching<F>(
+    &mut self,
+    deadline: Instant,
+    method: &str,
+    matches: F,
+  ) -> Result<Value>
+  where
+    F: Fn(&Value) -> bool,
+  {
     if let Some(index) = self.pending_events.iter().position(|event| {
-      event.get("method").and_then(Value::as_str) == Some(method)
-        && event.get("sessionId").and_then(Value::as_str) == Some(session_id)
+      event.get("method").and_then(Value::as_str) == Some(method) && matches(event)
     }) {
       let event = self
         .pending_events
@@ -139,9 +164,7 @@ impl ChromeDeveloperProtocol {
         .await
         .context("request timed out")??
         .context("Chrome closed the CDP connection")?;
-      if event.get("method").and_then(Value::as_str) == Some(method)
-        && event.get("sessionId").and_then(Value::as_str) == Some(session_id)
-      {
+      if event.get("method").and_then(Value::as_str) == Some(method) && matches(&event) {
         return event
           .get("params")
           .cloned()

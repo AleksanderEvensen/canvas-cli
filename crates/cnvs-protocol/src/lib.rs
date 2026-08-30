@@ -43,13 +43,19 @@ pub enum Response {
   Api {
     status: u16,
     status_text: String,
-    body: String,
-    #[serde(default)]
-    body_base64: bool,
+    body: ResponseBody,
   },
   Error {
     message: String,
   },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum ResponseBody {
+  Text(String),
+  Base64(String),
+  File(std::path::PathBuf),
 }
 
 #[cfg(test)]

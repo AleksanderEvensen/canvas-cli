@@ -103,7 +103,6 @@ async fn run_listener(listener: UnixListener, profile: &Path) -> Result<()> {
                             status: result.status,
                             status_text: result.status_text,
                             body: result.body,
-                            body_base64: result.body_base64,
                         },
                         Err(error) => Response::Error { message: format!("{error:#}") },
                     };

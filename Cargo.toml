@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/cnvs",
+  "crates/cnvs-agents",
   "crates/cnvs-config",
   "crates/cnvs-daemon",
   "crates/cnvs-protocol",

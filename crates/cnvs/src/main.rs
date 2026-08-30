@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use clap::{Args, Parser, Subcommand};
 use cnvs_config::Config;
-use cnvs_protocol::{ApiRequest, DaemonState, Header, Request, Response};
+use cnvs_protocol::{ApiRequest, DaemonState, Header, Request, Response, ResponseBody};
 #[cfg(feature = "write-requests")]
 use serde_json::{json, Value};
 use url::Url;
@@ -37,12 +37,25 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
   Api(ApiArgs),
+  Agent {
+    #[command(subcommand)]
+    command: AgentCommand,
+  },
   #[cfg(feature = "write-requests")]
   Gql(GqlArgs),
   Daemon {
     #[command(subcommand)]
     command: DaemonCommand,
   },
+  Config {
+    #[command(subcommand)]
+    command: ConfigCommand,
+  },
+}
+
+#[derive(Subcommand)]
+enum AgentCommand {
+  Skills { slug: Option<String> },
 }
 
 #[derive(Args)]
@@ -79,6 +92,12 @@ struct GqlArgs {
 
   #[arg(long, conflicts_with = "variables")]
   variables_file: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+  Info,
+  Edit,
 }
 
 #[derive(Subcommand)]
@@ -126,8 +145,16 @@ fn run() -> Result<i32> {
       let output = args.output.clone();
       run_request(build_api_request(args)?, cli.verbose, output)
     }
+    Command::Agent { command } => match command {
+      AgentCommand::Skills { slug } => agent_skills(slug),
+    },
     #[cfg(feature = "write-requests")]
     Command::Gql(args) => run_request(build_gql_request(args)?, cli.verbose, None),
+
+    Command::Config { command } => match command {
+      ConfigCommand::Info => config_info(),
+      ConfigCommand::Edit => config_edit(),
+    },
 
     Command::Daemon { command } => match command {
       DaemonCommand::Start {
@@ -184,6 +211,68 @@ fn run() -> Result<i32> {
       }
     },
   }
+}
+
+fn agent_skills(slug: Option<String>) -> Result<i32> {
+  if let Some(slug) = slug {
+    let skill = cnvs_agents::get_skill(&slug).with_context(|| format!("unknown skill '{slug}'"))?;
+    print!("{}", skill.content);
+    return Ok(0);
+  }
+
+  println!("Available skills:");
+  for skill in cnvs_agents::list_skills() {
+    println!("\n- {}", skill.slug);
+    for line in skill.frontmatter.lines() {
+      println!("  {line}");
+    }
+  }
+  Ok(0)
+}
+
+fn config_info() -> Result<i32> {
+  let Some(path) = cnvs_config::config_path() else {
+    println!("Config file: unavailable (no user config directory)");
+    println!(
+      "\nCurrent configuration:\n{}",
+      Config::default().serialize()?
+    );
+    return Ok(0);
+  };
+
+  println!("Config file: {}", path.display());
+  println!("Exists: {}", path.is_file());
+  println!("\nCurrent configuration:");
+  println!("{}", Config::load()?.serialize()?);
+  Ok(0)
+}
+
+fn config_edit() -> Result<i32> {
+  let editor = env::var("EDITOR").context("$EDITOR is not set")?;
+  if editor.trim().is_empty() {
+    bail!("$EDITOR is empty");
+  }
+
+  let path = cnvs_config::config_path().context("could not determine the configuration path")?;
+  if !path.exists() {
+    let directory = path
+      .parent()
+      .context("configuration path has no parent directory")?;
+    fs::create_dir_all(directory)
+      .with_context(|| format!("could not create {}", directory.display()))?;
+    fs::write(&path, Config::default().serialize()? + "\n")
+      .with_context(|| format!("could not create {}", path.display()))?;
+  }
+
+  let status = ProcessCommand::new("sh")
+    .args(["-c", "exec $EDITOR \"$1\"", "cnvs-editor"])
+    .arg(&path)
+    .status()
+    .with_context(|| format!("could not start editor {editor}"))?;
+  if !status.success() {
+    bail!("editor exited with {status}");
+  }
+  Ok(0)
 }
 
 fn build_api_request(args: ApiArgs) -> Result<ApiRequest> {
@@ -262,13 +351,12 @@ fn run_request(request: ApiRequest, verbose: bool, output: Option<PathBuf>) -> R
       status,
       status_text,
       body,
-      body_base64,
     } => {
       if verbose {
         eprintln!("{status} {status_text}");
       }
       if !(200..300).contains(&status) {
-        if !body_base64 {
+        if let ResponseBody::Text(body) = &body {
           print!("{body}");
         }
         eprintln!("HTTP {status} {status_text}");
@@ -276,18 +364,53 @@ fn run_request(request: ApiRequest, verbose: bool, output: Option<PathBuf>) -> R
       }
 
       if let Some(path) = output {
-        let bytes = STANDARD
-          .decode(body)
-          .context("daemon returned invalid base64 data")?;
-        fs::write(&path, bytes).with_context(|| format!("could not write {}", path.display()))?;
-      } else if body_base64 {
-        io::stdout().write_all(
-          &STANDARD
-            .decode(body)
-            .context("daemon returned invalid base64 data")?,
-        )?;
+        match body {
+          ResponseBody::File(source) => {
+            match fs::rename(&source, &path) {
+              Ok(()) => {}
+              Err(error) if error.raw_os_error() == Some(18) => {
+                fs::copy(&source, &path)
+                  .with_context(|| format!("could not copy {}", source.display()))?;
+                fs::remove_file(&source)?;
+              }
+              Err(error) => {
+                return Err(error).with_context(|| format!("could not move {}", source.display()));
+              }
+            }
+            if let Some(directory) = source.parent() {
+              let _ = fs::remove_dir(directory);
+            }
+          }
+          ResponseBody::Base64(encoded) => {
+            let bytes = STANDARD
+              .decode(encoded)
+              .context("daemon returned invalid base64 data")?;
+            fs::write(&path, bytes)
+              .with_context(|| format!("could not write {}", path.display()))?;
+          }
+          ResponseBody::Text(text) => {
+            fs::write(&path, text)
+              .with_context(|| format!("could not write {}", path.display()))?;
+          }
+        }
       } else {
-        print!("{body}");
+        match body {
+          ResponseBody::Text(text) => print!("{text}"),
+          ResponseBody::Base64(encoded) => {
+            let bytes = STANDARD
+              .decode(encoded)
+              .context("daemon returned invalid base64 data")?;
+            io::stdout().write_all(&bytes)?;
+          }
+          ResponseBody::File(source) => {
+            let mut file = fs::File::open(&source)?;
+            io::copy(&mut file, &mut io::stdout())?;
+            fs::remove_file(&source)?;
+            if let Some(directory) = source.parent() {
+              let _ = fs::remove_dir(directory);
+            }
+          }
+        }
         io::stdout().flush()?;
       }
       Ok(0)

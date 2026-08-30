@@ -1,0 +1,10 @@
+[package]
+name = "cnvs-agents"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rust-embed = "8"
+
+[lints]
+workspace = true

@@ -35,6 +35,13 @@ chrome_user_data_dirs = [
 default_canvas_host = "https://canvas.ntnu.no"
 ```
 
+Inspect or edit the configuration with the configured editor (`$EDITOR`):
+
+```sh
+cnvs config info
+cnvs config edit
+```
+
 With `default_canvas_host` configured, API paths can omit the host:
 
 ```sh
@@ -44,6 +51,18 @@ cnvs api GET /api/v1/users/self
 A full `http://` or `https://` URL supplied on the command line always uses its specified host. Relative paths require `default_canvas_host`.
 
 The command-line option takes precedence over the environment variable. The environment variable takes precedence over automatic discovery. One daemon uses one profile until stopped.
+
+## Agent skills
+
+The binary includes skills that can be provided to AI agents:
+
+```sh
+cnvs agent skills
+cnvs agent skills cnvs-api
+```
+
+The first command lists skill slugs and their frontmatter. The second prints the
+full skill contents.
 
 ## Requests
 

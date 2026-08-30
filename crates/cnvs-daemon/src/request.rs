@@ -1,21 +1,32 @@
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, fs, path::PathBuf, time::Duration};
 
 use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::STANDARD, Engine};
-use cnvs_protocol::ApiRequest;
+use cnvs_protocol::{ApiRequest, ResponseBody};
 use serde_json::{json, Value};
 use tokio::time::{timeout, Instant};
 use url::Url;
 
 use crate::cdp::ChromeDeveloperProtocol;
 
+fn download_directory() -> anyhow::Result<PathBuf> {
+  let base = std::env::temp_dir();
+  for attempt in 0..100u32 {
+    let path = base.join(format!("cnvs-download-{}-{attempt}", std::process::id()));
+    match fs::create_dir(&path) {
+      Ok(()) => return Ok(path),
+      Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+      Err(error) => return Err(error.into()),
+    }
+  }
+  anyhow::bail!("could not create a unique download directory")
+}
+
 const REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
 
 pub struct HttpResponse {
   pub(crate) status: u16,
   pub(crate) status_text: String,
-  pub(crate) body: String,
-  pub(crate) body_base64: bool,
+  pub(crate) body: ResponseBody,
 }
 
 pub async fn execute(
@@ -210,12 +221,13 @@ async fn run_in_target(
       .and_then(Value::as_str)
       .unwrap_or_default()
       .to_owned(),
-    body: result
-      .get("body")
-      .and_then(Value::as_str)
-      .unwrap_or_default()
-      .to_owned(),
-    body_base64: false,
+    body: ResponseBody::Text(
+      result
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned(),
+    ),
   })
 }
 
@@ -229,88 +241,63 @@ async fn download_in_target(
     bail!("downloads support GET requests without custom headers or a request body");
   }
 
-  let frame_tree = cdp
-    .call_before(deadline, "Page.getFrameTree", json!({}), Some(session_id))
-    .await?;
-  let frame_id = frame_tree
-    .get("frameTree")
-    .and_then(|tree| tree.get("frame"))
-    .and_then(|frame| frame.get("id"))
-    .and_then(Value::as_str)
-    .context("Page.getFrameTree returned no frame id")?;
-  let loaded = cdp
+  let directory = download_directory()?;
+  cdp
     .call_before(
       deadline,
-      "Network.loadNetworkResource",
+      "Browser.setDownloadBehavior",
       json!({
-        "frameId": frame_id,
-        "url": request.url,
-        "options": { "disableCache": false, "includeCredentials": true },
+        "behavior": "allow",
+        "downloadPath": directory,
+        "eventsEnabled": true,
+      }),
+      None,
+    )
+    .await?;
+  cdp
+    .call_before(
+      deadline,
+      "Runtime.evaluate",
+      json!({
+        "expression": format!(
+          "(() => {{ const a = document.createElement('a'); a.href = {}; a.download = ''; document.body.appendChild(a); a.click(); a.remove(); }})()",
+          serde_json::to_string(&request.url)?
+        ),
       }),
       Some(session_id),
     )
     .await?;
-  let resource = loaded
-    .get("resource")
-    .context("Network.loadNetworkResource returned no resource")?;
-  if resource["success"].as_bool() != Some(true) {
-    bail!(
-      "download failed: {}",
-      resource["netErrorName"]
-        .as_str()
-        .unwrap_or("unknown network error")
-    );
-  }
-
-  let mut bytes = Vec::new();
-  if let Some(handle) = resource["stream"].as_str() {
-    loop {
-      let chunk = cdp
-        .call_before(
-          deadline,
-          "IO.read",
-          json!({ "handle": handle, "size": 1024 * 1024 }),
-          Some(session_id),
-        )
-        .await?;
-      let data = chunk
-        .get("data")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-      if chunk.get("base64Encoded").and_then(Value::as_bool) == Some(true) {
-        bytes.extend(
-          STANDARD
-            .decode(data)
-            .context("Chrome returned invalid base64 data")?,
-        );
-      } else {
-        bytes.extend_from_slice(data.as_bytes());
-      }
-      if chunk.get("eof").and_then(Value::as_bool) == Some(true) {
-        break;
-      }
-    }
-    cdp
-      .call_before(
-        deadline,
-        "IO.close",
-        json!({ "handle": handle }),
-        Some(session_id),
-      )
+  let begin = cdp
+    .wait_for_browser_event_before(deadline, "Browser.downloadWillBegin")
+    .await?;
+  let guid = begin["guid"]
+    .as_str()
+    .context("download event had no guid")?
+    .to_owned();
+  loop {
+    let progress = cdp
+      .wait_for_browser_event_before(deadline, "Browser.downloadProgress")
       .await?;
+    if progress["guid"].as_str() != Some(&guid) {
+      continue;
+    }
+    match progress["state"].as_str() {
+      Some("completed") => break,
+      Some("canceled") => anyhow::bail!("download was canceled"),
+      _ => {}
+    }
   }
-
+  let file = fs::read_dir(&directory)?
+    .filter_map(Result::ok)
+    .map(|entry| entry.path())
+    .find(|path| path.is_file())
+    .context("completed download file was not found")?;
   Ok(HttpResponse {
-    status: resource["httpStatusCode"]
-      .as_u64()
-      .and_then(|status| status.try_into().ok())
-      .unwrap_or(200),
+    status: 200,
     status_text: String::new(),
-    body: STANDARD.encode(bytes),
-    body_base64: true,
+    body: ResponseBody::File(file),
   })
 }
-
 async fn evaluate_before(
   cdp: &mut ChromeDeveloperProtocol,
   deadline: Instant,
