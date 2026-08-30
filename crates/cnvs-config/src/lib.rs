@@ -18,19 +18,11 @@ pub struct Config {
 
 impl Config {
   /// Serializes the configuration as TOML.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error when the configuration cannot be represented as TOML.
   pub fn serialize(&self) -> Result<String> {
     Ok(toml::to_string_pretty(self)?)
   }
 
   /// Loads the user's configuration, or returns the default configuration when it does not exist.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error when the configuration file cannot be read or parsed.
   pub fn load() -> Result<Self> {
     let Some(path) = config_path() else {
       return Ok(Self::default());

@@ -27,10 +27,6 @@ pub use profile::{daemon_socket_path, discover_profile, requested_profile, PROFI
 const IDLE_TIMEOUT: Duration = Duration::from_hours(1);
 const CLIENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
-///
-/// # Errors
-///
-/// Returns an error when the daemon socket cannot be created, the browser connection fails, or a request cannot be processed.
 pub async fn run(profile: PathBuf) -> Result<()> {
   let socket = daemon_socket_path()?;
   let directory = socket.parent().context("daemon socket has no parent")?;

@@ -12,10 +12,6 @@ pub const SOCKET_FILE: &str = "daemon.sock";
 
 /// Gets the path to the unix socket file
 #[inline]
-///
-/// # Errors
-///
-/// Returns an error when the home directory cannot be determined.
 pub fn daemon_socket_path() -> Result<PathBuf> {
   Ok(
     dirs::home_dir()
@@ -25,10 +21,6 @@ pub fn daemon_socket_path() -> Result<PathBuf> {
   )
 }
 
-///
-/// # Errors
-///
-/// Returns an error when the selected profile cannot be opened or does not have an active `DevTools` port.
 pub fn requested_profile(explicit: Option<PathBuf>) -> Result<Option<PathBuf>> {
   explicit
     .or_else(|| env::var_os(PROFILE_ENV).map(PathBuf::from))
@@ -36,10 +28,6 @@ pub fn requested_profile(explicit: Option<PathBuf>) -> Result<Option<PathBuf>> {
     .transpose()
 }
 
-///
-/// # Errors
-///
-/// Returns an error when the home directory or configuration cannot be read, or when no active profile is found.
 pub fn discover_profile() -> Result<PathBuf> {
   let home = dirs::home_dir().context("could not determine home directory")?;
   let config = Config::load()?;
