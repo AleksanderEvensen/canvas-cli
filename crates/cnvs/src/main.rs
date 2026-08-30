@@ -21,6 +21,8 @@ use url::Url;
 /// If the daemon uses more than this amount of time to start, then we fail the request
 const STARTUP_TIMEOUT: Duration = Duration::from_mins(1);
 
+static READ_ONLY_ACTIONS: bool = !cfg!(feature = "write-requests");
+
 #[derive(Parser)]
 #[command(
   name = "cnvs",
@@ -214,18 +216,39 @@ fn run() -> Result<i32> {
 }
 
 fn agent_skills(slug: Option<String>) -> Result<i32> {
+  let config = Config::load()?;
+
   if let Some(slug) = slug {
-    let skill = cnvs_agents::get_skill(&slug).with_context(|| format!("unknown skill '{slug}'"))?;
+    let skill = cnvs_agents::get_skill(&slug, &config, READ_ONLY_ACTIONS)
+      .with_context(|| format!("unknown skill '{slug}'"))?;
     print!("{}", skill.content);
     return Ok(0);
   }
 
   println!("Available skills:");
-  for skill in cnvs_agents::list_skills() {
-    println!("\n- {}", skill.slug);
-    for line in skill.frontmatter.lines() {
-      println!("  {line}");
+  for skill in cnvs_agents::list_skills(&config, READ_ONLY_ACTIONS) {
+    // move skill into a mutable variable
+    let mut skill = skill;
+
+    // We manually handle the name and description since we want this to appear first in the list every time
+    match (
+      skill.frontmatter.remove("name"),
+      skill.frontmatter.remove("description"),
+    ) {
+      (None, _) => bail!("Missing name in frontmatter for skill: {}", skill.slug),
+      (Some(name), description) => {
+        // Print name and description
+        println!("- name: {name}");
+        if let Some(description) = description {
+          println!("  description: {description}");
+        }
+      }
     }
+
+    for (key, value) in skill.frontmatter.drain() {
+      println!("  {key}: {value}");
+    }
+    println!();
   }
   Ok(0)
 }

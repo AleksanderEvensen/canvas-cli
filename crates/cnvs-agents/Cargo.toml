@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rust-embed = "8"
+cnvs-config = { path = "../cnvs-config" }
+sailfish = "0.11"
 
 [lints]
 workspace = true
