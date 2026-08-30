@@ -10,6 +10,7 @@ write-requests = []
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+cnvs-config = { path = "../cnvs-config" }
 cnvs-protocol = { path = "../cnvs-protocol" }
 dirs = "6"
 futures-util = "0.3"
@@ -19,17 +20,5 @@ tokio-tungstenite = "0.27"
 url = "2"
 
 
-[lints.clippy]
-# Start with standard pedantic rules
-all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-
-# Deny explicit footguns in core logic
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
-todo = "deny"
-unimplemented = "deny"
-indexing_slicing = "deny" # Forces safe checking (.get())
-print_stdout = "deny" # Forces tracing/logging abstractions
-print_stderr = "deny"
+[lints]
+workspace = true

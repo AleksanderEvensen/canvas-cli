@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+use cnvs_config::Config;
 
 pub const PROFILE_ENV: &str = "CNVS_CHROME_USER_DATA_DIR";
 pub const CONFIG_DIR: &str = ".cnvs";
@@ -11,6 +12,10 @@ pub const SOCKET_FILE: &str = "daemon.sock";
 
 /// Gets the path to the unix socket file
 #[inline]
+///
+/// # Errors
+///
+/// Returns an error when the home directory cannot be determined.
 pub fn daemon_socket_path() -> Result<PathBuf> {
   Ok(
     dirs::home_dir()
@@ -20,15 +25,24 @@ pub fn daemon_socket_path() -> Result<PathBuf> {
   )
 }
 
+///
+/// # Errors
+///
+/// Returns an error when the selected profile cannot be opened or does not have an active `DevTools` port.
 pub fn requested_profile(explicit: Option<PathBuf>) -> Result<Option<PathBuf>> {
   explicit
     .or_else(|| env::var_os(PROFILE_ENV).map(PathBuf::from))
-    .map(normalize_profile)
+    .map(|path| normalize_profile(&path))
     .transpose()
 }
 
+///
+/// # Errors
+///
+/// Returns an error when the home directory or configuration cannot be read, or when no active profile is found.
 pub fn discover_profile() -> Result<PathBuf> {
   let home = dirs::home_dir().context("could not determine home directory")?;
+  let config = Config::load()?;
 
   #[cfg(target_os = "macos")]
   let candidates = {
@@ -42,6 +56,7 @@ pub fn discover_profile() -> Result<PathBuf> {
       "net.imput.helium",
     ]
     .map(|path| root.join(path))
+    .into_iter()
   };
 
   #[cfg(target_os = "linux")]
@@ -49,30 +64,34 @@ pub fn discover_profile() -> Result<PathBuf> {
     let root = home.join(".config");
     [
       "google-chrome",
-      "google-chrome-beta",
       "chromium",
       "BraveSoftware/Brave-Browser",
+      "BraveSoftware/Brave-Origin",
       "microsoft-edge",
-      "helium",
+      "vivaldi",
+      "net.imput.helium",
     ]
     .map(|path| root.join(path))
+    .into_iter()
   };
 
   #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-  let candidates: [PathBuf; 0] = [];
+  let candidates = std::iter::empty();
 
-  candidates
+  config
+    .chrome_user_data_dirs
     .into_iter()
+    .chain(candidates)
     .find(|path| path.join("DevToolsActivePort").is_file())
-    .map(normalize_profile)
+    .map(|path| normalize_profile(&path))
     .transpose()?
     .context(format!(
-      "no active Chromium CDP profile found; enable Remote Debugging or set {PROFILE_ENV}"
+      "no active Chromium CDP profile found; enable Remote Debugging, set {PROFILE_ENV}, or add a path to chrome_user_data_dirs in ~/.config/cnvs/config.toml"
     ))
 }
 
-fn normalize_profile(path: PathBuf) -> Result<PathBuf> {
-  let path = fs::canonicalize(&path).with_context(|| {
+fn normalize_profile(path: &Path) -> Result<PathBuf> {
+  let path = fs::canonicalize(path).with_context(|| {
     format!(
       "could not open Chrome user-data directory {}",
       path.display()
@@ -87,7 +106,7 @@ fn normalize_profile(path: PathBuf) -> Result<PathBuf> {
   Ok(path)
 }
 
-pub(crate) fn devtools_ws_endpoint(profile: &Path) -> Result<String> {
+pub fn devtools_ws_endpoint(profile: &Path) -> Result<String> {
   let path = profile.join("DevToolsActivePort");
   let contents =
     fs::read_to_string(&path).with_context(|| format!("could not read {}", path.display()))?;

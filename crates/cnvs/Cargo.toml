@@ -11,23 +11,12 @@ write-requests = ["cnvs-daemon/write-requests"]
 anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
+cnvs-config = { path = "../cnvs-config" }
 cnvs-daemon = { path = "../cnvs-daemon" }
 cnvs-protocol = { path = "../cnvs-protocol" }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 url = "2"
 
-[lints.clippy]
-# Start with standard pedantic rules
-all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-
-# Deny explicit footguns in core logic
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
-todo = "deny"
-unimplemented = "deny"
-indexing_slicing = "deny" # Forces safe checking (.get())
-print_stdout = "deny" # Forces tracing/logging abstractions
-print_stderr = "deny"
+[lints]
+workspace = true

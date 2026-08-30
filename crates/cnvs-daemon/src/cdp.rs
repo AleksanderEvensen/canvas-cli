@@ -11,11 +11,11 @@ use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, Web
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-pub(crate) struct ChromeDeveloperProtocol {
+pub struct ChromeDeveloperProtocol {
   ws: Ws,
   next_id: u64,
   pending_events: VecDeque<Value>,
-  closed: bool,
+  pub(crate) closed: bool,
 }
 
 impl ChromeDeveloperProtocol {
@@ -66,11 +66,17 @@ impl ChromeDeveloperProtocol {
     session_id: Option<&str>,
   ) -> Result<Value> {
     let id = self.next_id;
-    self.next_id += 1;
+    self.next_id = self
+      .next_id
+      .checked_add(1)
+      .context("CDP message ID overflow")?;
 
     let mut request = json!({ "id": id, "method": method, "params": params });
     if let Some(session_id) = session_id {
-      request["sessionId"] = json!(session_id);
+      request
+        .as_object_mut()
+        .context("CDP request is not an object")?
+        .insert("sessionId".into(), json!(session_id));
     }
     self
       .ws
@@ -87,7 +93,10 @@ impl ChromeDeveloperProtocol {
       if let Some(error) = response.get("error") {
         bail!("CDP {method} failed: {error}");
       }
-      return Ok(response["result"].clone());
+      return response
+        .get("result")
+        .cloned()
+        .context("CDP response has no result");
     }
 
     bail!("Chrome closed the CDP connection")
@@ -115,7 +124,14 @@ impl ChromeDeveloperProtocol {
       event.get("method").and_then(Value::as_str) == Some(method)
         && event.get("sessionId").and_then(Value::as_str) == Some(session_id)
     }) {
-      return Ok(self.pending_events.remove(index).expect("event exists")["params"].clone());
+      let event = self
+        .pending_events
+        .remove(index)
+        .context("pending event disappeared")?;
+      return event
+        .get("params")
+        .cloned()
+        .context("CDP event has no params");
     }
 
     loop {
@@ -126,16 +142,15 @@ impl ChromeDeveloperProtocol {
       if event.get("method").and_then(Value::as_str) == Some(method)
         && event.get("sessionId").and_then(Value::as_str) == Some(session_id)
       {
-        return Ok(event["params"].clone());
+        return event
+          .get("params")
+          .cloned()
+          .context("CDP event has no params");
       }
     }
   }
 
   pub(crate) fn clear_pending_events(&mut self) {
     self.pending_events.clear();
-  }
-
-  pub(crate) fn closed(&self) -> bool {
-    self.closed
   }
 }

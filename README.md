@@ -17,7 +17,7 @@ cargo install --git https://github.com/AleksanderEvensen/canvas-cli.git cnvs --f
 
 ## Browser setup
 
-Open `chrome://inspect/#remote-debugging` and enable Remote Debugging. `cnvs` searches active Chrome, Chrome Beta, Chromium, Brave, Edge, and Helium profiles in that order.
+Open `chrome://inspect/#remote-debugging` and enable Remote Debugging. `cnvs` searches active stable Chrome, Chromium, Brave, Edge, Vivaldi, and Helium profiles in that order.
 
 Choose a profile explicitly when needed:
 
@@ -25,7 +25,25 @@ Choose a profile explicitly when needed:
 cnvs daemon start --chrome-user-data-dir '/path/to/browser/user-data'
 ```
 
-`CNVS_CHROME_USER_DATA_DIR` provides the same setting. One daemon uses one profile until stopped.
+`CNVS_CHROME_USER_DATA_DIR` provides the same setting. When no profile is specified, `cnvs` checks paths listed in `~/.config/cnvs/config.toml` before the standard browser locations:
+
+```toml
+chrome_user_data_dirs = [
+  "/path/to/browser/user-data",
+  "/another/browser/user-data",
+]
+default_canvas_host = "https://canvas.ntnu.no"
+```
+
+With `default_canvas_host` configured, API paths can omit the host:
+
+```sh
+cnvs api GET /api/v1/users/self
+```
+
+A full `http://` or `https://` URL supplied on the command line always uses its specified host. Relative paths require `default_canvas_host`.
+
+The command-line option takes precedence over the environment variable. The environment variable takes precedence over automatic discovery. One daemon uses one profile until stopped.
 
 ## Requests
 

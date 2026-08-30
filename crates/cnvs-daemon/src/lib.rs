@@ -24,9 +24,13 @@ use request::{close_owned_targets, execute};
 
 pub use profile::{daemon_socket_path, discover_profile, requested_profile, PROFILE_ENV};
 
-const IDLE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+const IDLE_TIMEOUT: Duration = Duration::from_hours(1);
 const CLIENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
+///
+/// # Errors
+///
+/// Returns an error when the daemon socket cannot be created, the browser connection fails, or a request cannot be processed.
 pub async fn run(profile: PathBuf) -> Result<()> {
   let socket = daemon_socket_path()?;
   let directory = socket.parent().context("daemon socket has no parent")?;
@@ -66,7 +70,9 @@ async fn run_listener(listener: UnixListener, profile: &Path) -> Result<()> {
   };
 
   let mut owned_targets = HashSet::new();
-  let mut idle_deadline = Instant::now() + IDLE_TIMEOUT;
+  let mut idle_deadline = Instant::now()
+    .checked_add(IDLE_TIMEOUT)
+    .context("idle deadline overflow")?;
 
   loop {
     tokio::select! {
@@ -102,14 +108,16 @@ async fn run_listener(listener: UnixListener, profile: &Path) -> Result<()> {
                         Err(error) => Response::Error { message: format!("{error:#}") },
                     };
                     reply(&mut stream, response).await?;
-                    idle_deadline = Instant::now() + IDLE_TIMEOUT;
-                    if cdp.closed() {
+                    idle_deadline = Instant::now()
+                      .checked_add(IDLE_TIMEOUT)
+                      .context("idle deadline overflow")?;
+                    if cdp.closed {
                         break;
                     }
                 }
             }
         },
-        _ = tokio::time::sleep_until(idle_deadline) => {
+        () = tokio::time::sleep_until(idle_deadline) => {
             close_owned_targets(&mut cdp, &owned_targets).await;
             break;
         }

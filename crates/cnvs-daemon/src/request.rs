@@ -9,30 +9,36 @@ use url::Url;
 
 use crate::cdp::ChromeDeveloperProtocol;
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
 
-pub(crate) struct HttpResponse {
+pub struct HttpResponse {
   pub(crate) status: u16,
   pub(crate) status_text: String,
   pub(crate) body: String,
   pub(crate) body_base64: bool,
 }
 
-pub(crate) async fn execute(
+pub async fn execute(
   cdp: &mut ChromeDeveloperProtocol,
   request: &ApiRequest,
   owned_targets: &mut HashSet<String>,
 ) -> Result<HttpResponse> {
+  // Reload configuration for every request so daemon-side options do not become stale.
+  let _config = cnvs_config::Config::load()?;
+  #[cfg(not(feature = "write-requests"))]
   ensure_method_allowed(&request.method)?;
-  let deadline = Instant::now() + REQUEST_TIMEOUT;
+  let deadline = Instant::now()
+    .checked_add(REQUEST_TIMEOUT)
+    .context("request deadline overflow")?;
   let url = Url::parse(&request.url).context("invalid request URL")?;
   let wanted_origin = origin(&url)?;
 
   let targets = cdp
     .call_before(deadline, "Target.getTargets", json!({}), None)
     .await?;
-  let target_infos = targets["targetInfos"]
-    .as_array()
+  let target_infos = targets
+    .get("targetInfos")
+    .and_then(Value::as_array)
     .context("Target.getTargets returned no targetInfos")?;
   let live_targets: HashSet<_> = target_infos
     .iter()
@@ -53,24 +59,24 @@ pub(crate) async fn execute(
     .flatten()
   });
 
-  let (target_id, created) = match existing {
-    Some(target) => (target, false),
-    None => {
-      let result = cdp
-        .call_before(
-          deadline,
-          "Target.createTarget",
-          json!({ "url": "about:blank" }),
-          None,
-        )
-        .await?;
-      let target = result["targetId"]
-        .as_str()
-        .context("Target.createTarget returned no targetId")?
-        .to_owned();
-      owned_targets.insert(target.clone());
-      (target, true)
-    }
+  let (target_id, created) = if let Some(target) = existing {
+    (target, false)
+  } else {
+    let result = cdp
+      .call_before(
+        deadline,
+        "Target.createTarget",
+        json!({ "url": "about:blank" }),
+        None,
+      )
+      .await?;
+    let target = result
+      .get("targetId")
+      .and_then(Value::as_str)
+      .context("Target.createTarget returned no targetId")?
+      .to_owned();
+    owned_targets.insert(target.clone());
+    (target, true)
   };
 
   let attached = cdp
@@ -81,8 +87,9 @@ pub(crate) async fn execute(
       None,
     )
     .await?;
-  let session_id = attached["sessionId"]
-    .as_str()
+  let session_id = attached
+    .get("sessionId")
+    .and_then(Value::as_str)
     .context("Target.attachToTarget returned no sessionId")?
     .to_owned();
 
@@ -193,12 +200,21 @@ async fn run_in_target(
   let result = evaluate_before(cdp, deadline, session_id, &expression).await?;
 
   Ok(HttpResponse {
-    status: result["status"]
-      .as_u64()
+    status: result
+      .get("status")
+      .and_then(Value::as_u64)
       .and_then(|status| status.try_into().ok())
       .context("fetch returned no valid status")?,
-    status_text: result["statusText"].as_str().unwrap_or_default().to_owned(),
-    body: result["body"].as_str().unwrap_or_default().to_owned(),
+    status_text: result
+      .get("statusText")
+      .and_then(Value::as_str)
+      .unwrap_or_default()
+      .to_owned(),
+    body: result
+      .get("body")
+      .and_then(Value::as_str)
+      .unwrap_or_default()
+      .to_owned(),
     body_base64: false,
   })
 }
@@ -216,8 +232,11 @@ async fn download_in_target(
   let frame_tree = cdp
     .call_before(deadline, "Page.getFrameTree", json!({}), Some(session_id))
     .await?;
-  let frame_id = frame_tree["frameTree"]["frame"]["id"]
-    .as_str()
+  let frame_id = frame_tree
+    .get("frameTree")
+    .and_then(|tree| tree.get("frame"))
+    .and_then(|frame| frame.get("id"))
+    .and_then(Value::as_str)
     .context("Page.getFrameTree returned no frame id")?;
   let loaded = cdp
     .call_before(
@@ -231,7 +250,9 @@ async fn download_in_target(
       Some(session_id),
     )
     .await?;
-  let resource = &loaded["resource"];
+  let resource = loaded
+    .get("resource")
+    .context("Network.loadNetworkResource returned no resource")?;
   if resource["success"].as_bool() != Some(true) {
     bail!(
       "download failed: {}",
@@ -252,8 +273,11 @@ async fn download_in_target(
           Some(session_id),
         )
         .await?;
-      let data = chunk["data"].as_str().unwrap_or_default();
-      if chunk["base64Encoded"].as_bool() == Some(true) {
+      let data = chunk
+        .get("data")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+      if chunk.get("base64Encoded").and_then(Value::as_bool) == Some(true) {
         bytes.extend(
           STANDARD
             .decode(data)
@@ -262,7 +286,7 @@ async fn download_in_target(
       } else {
         bytes.extend_from_slice(data.as_bytes());
       }
-      if chunk["eof"].as_bool() == Some(true) {
+      if chunk.get("eof").and_then(Value::as_bool) == Some(true) {
         break;
       }
     }
@@ -308,13 +332,14 @@ async fn evaluate_before(
   if let Some(exception) = result.get("exceptionDetails") {
     bail!("JavaScript evaluation failed: {exception}");
   }
-  Ok(result["result"]["value"].clone())
+  result
+    .get("result")
+    .and_then(|result| result.get("value"))
+    .cloned()
+    .context("Runtime.evaluate returned no value")
 }
 
-pub(crate) async fn close_owned_targets(
-  cdp: &mut ChromeDeveloperProtocol,
-  targets: &HashSet<String>,
-) {
+pub async fn close_owned_targets(cdp: &mut ChromeDeveloperProtocol, targets: &HashSet<String>) {
   for target in targets {
     let _ = timeout(
       Duration::from_secs(2),
@@ -329,11 +354,6 @@ fn ensure_method_allowed(method: &str) -> Result<()> {
   if !method.eq_ignore_ascii_case("GET") {
     bail!("only GET requests are enabled; reinstall with --features write-requests to enable write requests");
   }
-  Ok(())
-}
-
-#[cfg(feature = "write-requests")]
-fn ensure_method_allowed(_method: &str) -> Result<()> {
   Ok(())
 }
 

@@ -12,6 +12,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use clap::{Args, Parser, Subcommand};
+use cnvs_config::Config;
 use cnvs_protocol::{ApiRequest, DaemonState, Header, Request, Response};
 #[cfg(feature = "write-requests")]
 use serde_json::{json, Value};
@@ -47,7 +48,7 @@ enum Command {
 #[derive(Args)]
 struct ApiArgs {
   method: String,
-  url: Url,
+  url: String,
 
   #[arg(long = "query", value_parser = parse_key_value)]
   query: Vec<KeyValue>,
@@ -68,7 +69,7 @@ struct ApiArgs {
 #[derive(Args)]
 struct GqlArgs {
   #[arg(long)]
-  url: Url,
+  url: String,
 
   #[arg(long)]
   file: Option<PathBuf>,
@@ -186,8 +187,7 @@ fn run() -> Result<i32> {
 }
 
 fn build_api_request(args: ApiArgs) -> Result<ApiRequest> {
-  let mut url = args.url;
-  validate_url(&url)?;
+  let mut url = resolve_url(&args.url)?;
   {
     let mut query = url.query_pairs_mut();
     for pair in args.query {
@@ -203,7 +203,7 @@ fn build_api_request(args: ApiArgs) -> Result<ApiRequest> {
       (None, None) => None,
       (Some(body), None) => Some(body),
       (None, Some(path)) => Some(read_input(&path)?),
-      (Some(_), Some(_)) => unreachable!("clap cli parsing rejects conflicting body options"),
+      (Some(_), Some(_)) => bail!("body and body-file cannot be used together"),
     },
     download: args.output.is_some(),
   })
@@ -211,7 +211,7 @@ fn build_api_request(args: ApiArgs) -> Result<ApiRequest> {
 
 #[cfg(feature = "write-requests")]
 fn build_gql_request(args: GqlArgs) -> Result<ApiRequest> {
-  validate_url(&args.url)?;
+  let url = resolve_url(&args.url)?;
   let query = match args.file {
     Some(path) => read_input(&path)?,
     None => read_stdin()?,
@@ -228,12 +228,12 @@ fn build_gql_request(args: GqlArgs) -> Result<ApiRequest> {
     // Read from stdin or specified file name
     (None, Some(path)) => parse_variables(&read_input(&path)?)?,
 
-    (Some(_), Some(_)) => unreachable!("clap cli parsing rejects conflicting variable options"),
+    (Some(_), Some(_)) => bail!("variables and variables-file cannot be used together"),
   };
 
   Ok(ApiRequest {
     method: "POST".into(),
-    url: args.url.into(),
+    url: url.into(),
     headers: vec![Header {
       name: "content-type".into(),
       value: "application/json".into(),
@@ -253,9 +253,8 @@ fn run_request(request: ApiRequest, verbose: bool, output: Option<PathBuf>) -> R
     eprintln!("started daemon");
   }
 
-  let response = match send_request_to_daemon(&Request::Api(request))? {
-    Some(response) => response,
-    None => bail!("daemon stopped before accepting the request; run the command again"),
+  let Some(response) = send_request_to_daemon(&Request::Api(request))? else {
+    bail!("daemon stopped before accepting the request; run the command again");
   };
 
   match response {
@@ -310,12 +309,16 @@ fn ensure_daemon_running(explicit_profile: Option<PathBuf>) -> Result<(Status, b
     };
   }
 
-  let profile = requested
-    .clone()
-    .map(Ok)
-    .unwrap_or_else(cnvs_daemon::discover_profile)?;
+  let profile = requested.map_or_else(cnvs_daemon::discover_profile, Ok)?;
 
-  remove_stale_socket()?;
+  let socket = cnvs_daemon::daemon_socket_path()?;
+  match fs::remove_file(&socket) {
+    Ok(()) => {}
+    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+    Err(error) => {
+      return Err(error).with_context(|| format!("could not remove {}", socket.display()))
+    }
+  }
 
   let mut child = spawn_daemon(&profile)?;
   wait_until_daemon_running(Some(&profile), Some(&mut child), true)
@@ -326,7 +329,9 @@ fn wait_until_daemon_running(
   mut child_process: Option<&mut Child>,
   started: bool,
 ) -> Result<(Status, bool)> {
-  let deadline = Instant::now() + STARTUP_TIMEOUT;
+  let deadline = Instant::now()
+    .checked_add(STARTUP_TIMEOUT)
+    .context("startup deadline overflow")?;
 
   loop {
     if let Some(process) = child_process.as_deref_mut() {
@@ -443,15 +448,6 @@ fn send_request_to_daemon(request: &Request) -> Result<Option<Response>> {
   ))
 }
 
-fn remove_stale_socket() -> Result<()> {
-  let path = cnvs_daemon::daemon_socket_path()?;
-  match fs::remove_file(&path) {
-    Ok(()) => Ok(()),
-    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-    Err(error) => Err(error).with_context(|| format!("could not remove {}", path.display())),
-  }
-}
-
 fn parse_header(value: &str) -> std::result::Result<Header, String> {
   let (name, value) = value
     .split_once(':')
@@ -487,6 +483,34 @@ fn parse_variables(value: &str) -> Result<Value> {
   Ok(value)
 }
 
+fn resolve_url(value: &str) -> Result<Url> {
+  if let Ok(url) = Url::parse(value) {
+    if url.host().is_some() {
+      validate_url(&url)?;
+      return Ok(url);
+    }
+  }
+
+  let default_host = Config::load()?.default_canvas_host;
+  if !value.starts_with('/') || value.starts_with("//") {
+    bail!(
+      "invalid URL; use an http(s) URL or an absolute path with default_canvas_host configured"
+    );
+  }
+
+  let default_host = default_host
+    .as_deref()
+    .context("relative URLs require default_canvas_host in ~/.config/cnvs/config.toml")?;
+  let base = Url::parse(default_host).with_context(|| "default_canvas_host must be a valid URL")?;
+  validate_url(&base)?;
+  if base.host().is_none() {
+    bail!("default_canvas_host must include a host");
+  }
+  base
+    .join(value)
+    .with_context(|| format!("could not append path to default_canvas_host: {value}"))
+}
+
 fn validate_url(url: &Url) -> Result<()> {
   if !matches!(url.scheme(), "http" | "https") {
     bail!("only http:// and https:// URLs are supported");
@@ -516,7 +540,7 @@ mod tests {
   fn repeated_query_values_are_preserved() {
     let request = build_api_request(ApiArgs {
       method: "get".into(),
-      url: Url::parse("https://canvas.example/api?existing=yes").unwrap(),
+      url: "https://canvas.example/api?existing=yes".into(),
       query: vec![
         parse_key_value("include[]=term").unwrap(),
         parse_key_value("include[]=syllabus").unwrap(),
@@ -531,6 +555,13 @@ mod tests {
     assert!(request.url.contains("existing=yes"));
     assert_eq!(request.url.matches("include%5B%5D=").count(), 2);
     assert!(request.download);
+  }
+
+  #[test]
+  fn explicit_hosts_are_not_replaced_by_the_default() {
+    let url = resolve_url("https://other.example/api/v1/users/self").unwrap();
+
+    assert_eq!(url.as_str(), "https://other.example/api/v1/users/self");
   }
 
   #[test]
