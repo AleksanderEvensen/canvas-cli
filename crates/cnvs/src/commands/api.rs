@@ -39,6 +39,16 @@ pub struct ApiArgs {
   output: Option<PathBuf>,
 }
 
+pub(crate) fn get(path: &str, verbose: bool) -> Result<i32> {
+  get_url(resolve_url(path)?, verbose)
+}
+
+pub(crate) fn get_url(url: Url, verbose: bool) -> Result<i32> {
+  let mut request = ApiRequestBuilder::get(url);
+  request.enable_verbose(verbose);
+  handle_response(request.json()?, verbose, None)
+}
+
 pub(crate) fn run(args: ApiArgs, verbose: bool) -> Result<i32> {
   let output = args.output.clone();
 

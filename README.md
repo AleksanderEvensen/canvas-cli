@@ -48,6 +48,14 @@ With `default_canvas_host` configured, API paths can omit the host:
 cnvs api GET /api/v1/users/self
 ```
 
+Common Canvas resources also have grouped commands:
+
+```sh
+cnvs users me
+cnvs courses list
+cnvs courses get COURSE_ID
+```
+
 A full `http://` or `https://` URL supplied on the command line always uses its specified host. Relative paths require `default_canvas_host`.
 
 The command-line option takes precedence over the environment variable. The environment variable takes precedence over automatic discovery. One daemon uses one profile until stopped.

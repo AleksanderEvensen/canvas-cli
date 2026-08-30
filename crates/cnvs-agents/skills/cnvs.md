@@ -28,6 +28,17 @@ Use `cnvs config info` to inspect configuration and `cnvs config edit` to edit i
 
 <% if self.ctx.config.default_canvas_host.is_some() { %>Because `default_canvas_host` is configured, API requests may use an absolute path such as `/api/v1/users/self`.<% } else { %>Use full `http://` or `https://` URLs for API requests. Absolute paths require `default_canvas_host` in the configuration.<% } %>
 
+## Canvas resources
+
+Common read operations have grouped commands. They use the configured
+`default_canvas_host`:
+
+```sh
+cnvs users me
+cnvs courses list
+cnvs courses get COURSE_ID
+```
+
 ## API requests
 
 ```sh
