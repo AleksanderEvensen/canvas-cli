@@ -5,6 +5,7 @@ use super::api;
 
 #[derive(Subcommand)]
 pub enum UsersCommand {
+  #[command(about = "Fetch the currently signed-in Canvas user")]
   Me,
 }
 

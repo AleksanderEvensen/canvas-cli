@@ -1,7 +1,7 @@
 use std::{collections::HashSet, fs, path::PathBuf, time::Duration};
 
 use anyhow::{bail, Context, Result};
-use cnvs_protocol::{ApiRequest, ResponseBody};
+use cnvs_protocol::{ApiRequest, GraphqlRequest, ResponseBody, ASSIGNMENTS_QUERY};
 use serde_json::{json, Value};
 use tokio::time::{timeout, Instant};
 use url::Url;
@@ -29,15 +29,56 @@ pub struct HttpResponse {
   pub(crate) body: ResponseBody,
 }
 
+fn validate_read_only_graphql(request: &GraphqlRequest) -> Result<()> {
+  let url = Url::parse(&request.url).context("invalid GraphQL URL")?;
+  origin(&url)?;
+  if url.path() != "/api/graphql" || url.query().is_some() || url.fragment().is_some() {
+    bail!(
+      "read-only GraphQL requires the /api/graphql endpoint without query parameters or a fragment"
+    );
+  }
+  let body: Value = serde_json::from_str(&request.body).context("invalid GraphQL body")?;
+  let user_id = body
+    .pointer("/variables/userId")
+    .and_then(Value::as_str)
+    .filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+    .context("read-only GraphQL requires a numeric userId string")?;
+  if body != json!({ "query": ASSIGNMENTS_QUERY, "variables": { "userId": user_id } }) {
+    bail!("only the built-in assignments query is permitted through read-only GraphQL");
+  }
+  Ok(())
+}
+
+pub async fn execute_graphql(
+  cdp: &mut ChromeDeveloperProtocol,
+  request: &GraphqlRequest,
+  owned_targets: &mut HashSet<String>,
+) -> Result<HttpResponse> {
+  validate_read_only_graphql(request)?;
+  let request = ApiRequest {
+    method: "POST".to_owned(),
+    url: request.url.clone(),
+    headers: request.headers.clone(),
+    body: Some(request.body.clone()),
+    download: false,
+  };
+  execute(cdp, &request, owned_targets, true).await
+}
+
 pub async fn execute(
   cdp: &mut ChromeDeveloperProtocol,
   request: &ApiRequest,
   owned_targets: &mut HashSet<String>,
+  trusted: bool,
 ) -> Result<HttpResponse> {
   // Reload configuration for every request so daemon-side options do not become stale.
   let _config = cnvs_config::Config::load()?;
+  #[cfg(feature = "write-requests")]
+  let _ = trusted;
   #[cfg(not(feature = "write-requests"))]
-  ensure_method_allowed(&request.method)?;
+  if !trusted {
+    ensure_method_allowed(&request.method)?;
+  }
   let deadline = Instant::now()
     .checked_add(REQUEST_TIMEOUT)
     .context("request deadline overflow")?;
@@ -358,6 +399,35 @@ fn origin(url: &Url) -> Result<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn read_only_graphql_cannot_bypass_the_write_gate() {
+    let mut request = GraphqlRequest {
+      url: "https://canvas.example/api/graphql".into(),
+      headers: vec![],
+      body: json!({ "query": ASSIGNMENTS_QUERY, "variables": { "userId": "123" } }).to_string(),
+    };
+    assert!(validate_read_only_graphql(&request).is_ok());
+    let valid_body = request.body.clone();
+    for body in [
+      json!({ "query": "mutation { deleteThing(id: 1) }", "variables": { "userId": "123" } }),
+      json!({ "query": ASSIGNMENTS_QUERY, "variables": { "userId": "invalid" } }),
+      json!({ "query": ASSIGNMENTS_QUERY, "variables": { "userId": "123" }, "operationName": "Other" }),
+      json!([{ "query": ASSIGNMENTS_QUERY, "variables": { "userId": "123" } }]),
+    ] {
+      request.body = body.to_string();
+      assert!(validate_read_only_graphql(&request).is_err());
+    }
+    request.body = valid_body;
+    for url in [
+      "https://canvas.example/api/v1/courses",
+      "https://canvas.example/api/graphql?query=mutation",
+      "file:///api/graphql",
+    ] {
+      request.url = url.into();
+      assert!(validate_read_only_graphql(&request).is_err());
+    }
+  }
 
   #[test]
   fn accepts_only_network_origins() {

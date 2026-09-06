@@ -6,7 +6,9 @@ use cnvs_config::Config;
 
 #[derive(Subcommand)]
 pub enum ConfigCommand {
+  #[command(about = "Show the config file path and current settings")]
   Info,
+  #[command(about = "Open the config file in $EDITOR")]
   Edit,
 }
 

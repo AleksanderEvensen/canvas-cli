@@ -37,6 +37,9 @@ Common read operations have grouped commands. They use the configured
 cnvs users me
 cnvs courses list
 cnvs courses get COURSE_ID
+cnvs assignments list
+cnvs assignments list --past
+cnvs assignments list --hide-submitted
 ```
 
 ## API requests

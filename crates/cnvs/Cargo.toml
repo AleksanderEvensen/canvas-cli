@@ -10,8 +10,10 @@ write-requests = ["cnvs-daemon/write-requests"]
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+comfy-table = "7"
 cnvs-agents = { path = "../cnvs-agents" }
 clap = { version = "4", features = ["derive"] }
+jiff = { version = "0.2", default-features = false, features = ["std"] }
 cnvs-config = { path = "../cnvs-config" }
 cnvs-daemon = { path = "../cnvs-daemon" }
 cnvs-protocol = { path = "../cnvs-protocol" }

@@ -54,7 +54,14 @@ Common Canvas resources also have grouped commands:
 cnvs users me
 cnvs courses list
 cnvs courses get COURSE_ID
+cnvs assignments list
+cnvs assignments list --past
+cnvs assignments list --hide-submitted
 ```
+
+Assignment listing uses a fixed, read-only GraphQL query and works without
+`write-requests`. It currently supports up to 100 assignments per selected
+student course and fails explicitly if pagination would be needed.
 
 A full `http://` or `https://` URL supplied on the command line always uses its specified host. Relative paths require `default_canvas_host`.
 
@@ -113,7 +120,7 @@ cnvs daemon status
 cnvs daemon stop
 ```
 
-`start` and `stop` are idempotent. `status` reports the state, PID, and browser profile; it exits nonzero when stopped. Startup waits up to five minutes for Chrome approval. If that wait expires, the pending daemon remains available for later approval or `cnvs daemon stop`.
+`start` and `stop` are idempotent. `status` reports the state, PID, and browser profile; it exits nonzero when stopped. Startup waits up to one minute for Chrome approval. If that wait expires, the pending daemon remains available for later approval or `cnvs daemon stop`.
 
 ## Canvas endpoint documentation
 

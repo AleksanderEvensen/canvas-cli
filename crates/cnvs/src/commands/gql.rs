@@ -9,16 +9,29 @@ use crate::utilities::{ApiRequestBuilder, RequestBody};
 
 #[derive(Args)]
 pub struct GqlArgs {
-  #[arg(long)]
+  #[arg(long, help = "GraphQL endpoint URL")]
   url: String,
 
-  #[arg(long)]
+  #[arg(
+    long,
+    value_name = "PATH",
+    help = "Read the GraphQL query from PATH instead of stdin"
+  )]
   file: Option<PathBuf>,
 
-  #[arg(long, conflicts_with = "variables_file")]
+  #[arg(
+    long,
+    conflicts_with = "variables_file",
+    help = "Inline JSON variables object"
+  )]
   variables: Option<String>,
 
-  #[arg(long, conflicts_with = "variables")]
+  #[arg(
+    long,
+    conflicts_with = "variables",
+    value_name = "PATH",
+    help = "Read the JSON variables object from PATH"
+  )]
   variables_file: Option<PathBuf>,
 }
 

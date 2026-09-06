@@ -17,18 +17,21 @@ const STARTUP_TIMEOUT: Duration = Duration::from_mins(1);
 
 #[derive(Subcommand)]
 pub enum DaemonCommand {
+  #[command(about = "Start the browser connection daemon")]
   Start {
-    #[arg(long)]
+    #[arg(long, value_name = "PATH", help = "Chrome user-data directory to use")]
     chrome_user_data_dir: Option<PathBuf>,
   },
 
+  #[command(about = "Stop the browser connection daemon")]
   Stop,
 
+  #[command(about = "Show daemon state, process ID, and browser profile")]
   Status,
 
   #[command(name = "__run", hide = true)]
   Run {
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
     chrome_user_data_dir: PathBuf,
   },
 }

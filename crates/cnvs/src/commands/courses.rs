@@ -5,10 +5,12 @@ use super::api;
 
 #[derive(Subcommand)]
 pub enum CoursesCommand {
+  #[command(about = "List courses available to the signed-in user")]
   List,
 
+  #[command(about = "Fetch one course by ID")]
   Get {
-    #[arg(value_name = "COURSE_ID")]
+    #[arg(value_name = "COURSE_ID", help = "Canvas course ID")]
     course_id: String,
   },
 }

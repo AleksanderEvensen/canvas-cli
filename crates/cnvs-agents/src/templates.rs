@@ -22,6 +22,7 @@ macro_rules! skills {
           {
             #[derive(TemplateOnce)]
             #[template(path = $path)]
+            #[allow(dead_code)]
             struct Template<'a> {
               ctx: SkillContext<'a>,
             }
@@ -49,7 +50,11 @@ macro_rules! skills {
   };
 }
 
-skills![("cnvs-api", "cnvs-api.md"), ("cnvs", "cnvs.md")];
+skills![
+  ("cnvs-api", "cnvs-api.md"),
+  ("cnvs", "cnvs.md"),
+  ("cnvs-assignments", "cnvs-assignments.md"),
+];
 
 pub(crate) fn render_skills(
   config: &Config,

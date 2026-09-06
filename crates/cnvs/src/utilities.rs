@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
-use cnvs_protocol::{ApiRequest, Header, Request, Response};
+use cnvs_protocol::{ApiRequest, GraphqlRequest, Header, Request, Response};
 use serde::Serialize;
 use url::Url;
 
 pub(crate) struct ApiRequestBuilder {
   request: ApiRequest,
   verbose: bool,
+  trusted_graphql: bool,
 }
 
 pub(crate) enum RequestBody {
@@ -31,6 +32,7 @@ impl ApiRequestBuilder {
         download: false,
       },
       verbose: false,
+      trusted_graphql: false,
     }
   }
 
@@ -64,6 +66,12 @@ impl ApiRequestBuilder {
     for (name, value) in headers {
       self.header(name, value);
     }
+    self
+  }
+
+  /// Marks this request as the vetted built-in GraphQL request.
+  pub(crate) fn allow_read_only_graphql(&mut self) -> &mut Self {
+    self.trusted_graphql = true;
     self
   }
 
@@ -111,7 +119,19 @@ impl ApiRequestBuilder {
       eprintln!("started daemon");
     }
 
-    let response = crate::commands::daemon::send_request(&Request::Api(self.request))
+    let request = if self.trusted_graphql {
+      let request = self.request;
+      Request::Graphql(GraphqlRequest {
+        url: request.url,
+        headers: request.headers,
+        body: request
+          .body
+          .context("trusted GraphQL requests must include a body")?,
+      })
+    } else {
+      Request::Api(self.request)
+    };
+    let response = crate::commands::daemon::send_request(&request)
       .context("daemon stopped before accepting the request; run the command again")?
       .context("empty response from the server")?;
 

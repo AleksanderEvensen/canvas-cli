@@ -6,7 +6,14 @@ use cnvs_config::Config;
 
 #[derive(Subcommand)]
 pub enum AgentCommand {
-  Skills { slug: Option<String> },
+  #[command(about = "List available agent skills, or print one skill's instructions")]
+  Skills {
+    #[arg(
+      value_name = "SKILL",
+      help = "Skill slug to print; omit it to list skills"
+    )]
+    slug: Option<String>,
+  },
 }
 
 pub(crate) fn run(command: AgentCommand) -> Result<i32> {

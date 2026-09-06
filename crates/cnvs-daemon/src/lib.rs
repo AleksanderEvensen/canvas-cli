@@ -20,7 +20,7 @@ use tokio::{
 
 use cdp::ChromeDeveloperProtocol;
 use profile::devtools_ws_endpoint;
-use request::{close_owned_targets, execute};
+use request::{close_owned_targets, execute, execute_graphql};
 
 pub use profile::{daemon_socket_path, discover_profile, requested_profile, PROFILE_ENV};
 
@@ -58,7 +58,7 @@ async fn run_listener(listener: UnixListener, profile: &Path) -> Result<()> {
                     reply(&mut stream, Response::Stopped).await?;
                     return Ok(());
                 }
-                Ok(Request::Api(_)) => reply(&mut stream, Response::Error { message: "daemon is still starting".into() }).await?,
+                Ok(Request::Api(_)) | Ok(Request::Graphql(_)) => reply(&mut stream, Response::Error { message: "daemon is still starting".into() }).await?,
                 Err(error) => reply(&mut stream, Response::Error { message: error.to_string() }).await?,
             }
         }
@@ -93,15 +93,12 @@ async fn run_listener(listener: UnixListener, profile: &Path) -> Result<()> {
                     reply(&mut stream, Response::Stopped).await?;
                     break;
                 }
-                Request::Api(request) => {
-                    let response = match execute(&mut cdp, &request, &mut owned_targets).await {
-                        Ok(result) => Response::Api {
-                            status: result.status,
-                            status_text: result.status_text,
-                            body: result.body,
-                        },
-                        Err(error) => Response::Error { message: format!("{error:#}") },
-                    };
+                request @ (Request::Api(_) | Request::Graphql(_)) => {
+                    let response = execute_client_request(
+                      &mut cdp,
+                      request,
+                      &mut owned_targets,
+                    ).await;
                     reply(&mut stream, response).await?;
                     idle_deadline = Instant::now()
                       .checked_add(IDLE_TIMEOUT)
@@ -127,6 +124,32 @@ fn status(state: DaemonState, profile: &Path) -> Response {
     state,
     pid: std::process::id(),
     profile: profile.display().to_string(),
+  }
+}
+
+async fn execute_client_request(
+  cdp: &mut ChromeDeveloperProtocol,
+  request: Request,
+  owned_targets: &mut HashSet<String>,
+) -> Response {
+  let result = match request {
+    Request::Api(request) => execute(cdp, &request, owned_targets, false).await,
+    Request::Graphql(request) => execute_graphql(cdp, &request, owned_targets).await,
+    Request::Status | Request::Stop => {
+      return Response::Error {
+        message: "request cannot be executed by the client request handler".into(),
+      };
+    }
+  };
+  match result {
+    Ok(result) => Response::Api {
+      status: result.status,
+      status_text: result.status_text,
+      body: result.body,
+    },
+    Err(error) => Response::Error {
+      message: format!("{error:#}"),
+    },
   }
 }
 

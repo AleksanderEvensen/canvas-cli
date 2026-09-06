@@ -10,6 +10,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use clap::Args;
 use cnvs_config::Config;
 use cnvs_protocol::{Header, Response, ResponseBody};
+use serde_json::Value;
 use url::Url;
 
 #[derive(Clone)]
@@ -20,22 +21,40 @@ struct KeyValue {
 
 #[derive(Args)]
 pub struct ApiArgs {
+  #[arg(value_name = "METHOD", help = "HTTP method")]
   method: String,
+  #[arg(
+    value_name = "URL",
+    help = "Full http(s) URL or absolute path with default_canvas_host configured"
+  )]
   url: String,
 
-  #[arg(long = "query", value_parser = parse_key_value)]
+  #[arg(long = "query", value_name = "KEY=VALUE", value_parser = parse_key_value, help = "Add a query parameter; may be repeated")]
   query: Vec<KeyValue>,
 
-  #[arg(long = "header", value_parser = parse_header)]
+  #[arg(long = "header", value_name = "NAME: VALUE", value_parser = parse_header, help = "Add a request header; may be repeated")]
   headers: Vec<Header>,
 
-  #[arg(long, conflicts_with = "body_file")]
+  #[arg(
+    long,
+    conflicts_with = "body_file",
+    help = "Use this request body text"
+  )]
   body: Option<String>,
 
-  #[arg(long, conflicts_with = "body")]
+  #[arg(
+    long,
+    conflicts_with = "body",
+    value_name = "PATH",
+    help = "Read the request body from PATH, or - for stdin"
+  )]
   body_file: Option<PathBuf>,
 
-  #[arg(long)]
+  #[arg(
+    long,
+    value_name = "PATH",
+    help = "Write a downloaded response to PATH"
+  )]
   output: Option<PathBuf>,
 }
 
@@ -47,6 +66,40 @@ pub(crate) fn get_url(url: Url, verbose: bool) -> Result<i32> {
   let mut request = ApiRequestBuilder::get(url);
   request.enable_verbose(verbose);
   handle_response(request.json()?, verbose, None)
+}
+
+/// Fetches a JSON response for grouped commands without writing the response to stdout.
+pub(crate) fn get_json_url(url: Url, verbose: bool) -> Result<Value> {
+  let mut request = ApiRequestBuilder::get(url);
+  request.enable_verbose(verbose);
+  json_response(request.json()?, verbose)
+}
+
+pub(crate) fn json_response(response: Response, verbose: bool) -> Result<Value> {
+  match response {
+    Response::Api {
+      status,
+      status_text,
+      body,
+    } => {
+      if verbose {
+        eprintln!("{status} {status_text}");
+      }
+      if !(200..300).contains(&status) {
+        let detail = match body {
+          ResponseBody::Text(text) => format!(": {text}"),
+          _ => String::new(),
+        };
+        bail!("HTTP {status} {status_text}{detail}");
+      }
+      let ResponseBody::Text(body) = body else {
+        bail!("expected a JSON text response");
+      };
+      serde_json::from_str(&body).context("Canvas returned invalid JSON")
+    }
+    Response::Error { message } => bail!(message),
+    _ => bail!("daemon returned an unexpected response"),
+  }
 }
 
 pub(crate) fn run(args: ApiArgs, verbose: bool) -> Result<i32> {
