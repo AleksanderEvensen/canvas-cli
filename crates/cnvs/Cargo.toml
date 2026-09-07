@@ -8,8 +8,10 @@ default = []
 write-requests = ["cnvs-daemon/write-requests"]
 
 [dependencies]
+tonic = "0.14.6"
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower = { version = "0.5", features = ["util"] }
 anyhow = "1"
-base64 = "0.22"
 comfy-table = "7"
 cnvs-agents = { path = "../cnvs-agents" }
 clap = { version = "4", features = ["derive"] }
@@ -19,8 +21,11 @@ cnvs-daemon = { path = "../cnvs-daemon" }
 cnvs-protocol = { path = "../cnvs-protocol" }
 serde = "1"
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 url = "2"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,19 +1,21 @@
 use anyhow::{Context, Result};
-use cnvs_protocol::{ApiRequest, GraphqlRequest, Header, Request, Response};
+use cnvs_protocol::{api_request, ApiRequest, ApiResponse, Header};
+#[cfg(feature = "write-requests")]
 use serde::Serialize;
 use url::Url;
 
-pub(crate) struct ApiRequestBuilder {
+pub struct ApiRequestBuilder {
   request: ApiRequest,
   verbose: bool,
-  trusted_graphql: bool,
 }
 
-pub(crate) enum RequestBody {
+pub enum RequestBody {
   Text(String),
+  #[cfg(feature = "write-requests")]
   Json(String),
 }
 
+#[cfg(feature = "write-requests")]
 impl RequestBody {
   pub(crate) fn json(value: impl Serialize) -> Result<Self> {
     Ok(Self::Json(serde_json::to_string(&value)?))
@@ -32,7 +34,6 @@ impl ApiRequestBuilder {
         download: false,
       },
       verbose: false,
-      trusted_graphql: false,
     }
   }
 
@@ -44,7 +45,7 @@ impl ApiRequestBuilder {
     Self::new("POST", url)
   }
 
-  pub(crate) fn enable_verbose(&mut self, verbose: bool) -> &mut Self {
+  pub(crate) const fn enable_verbose(&mut self, verbose: bool) -> &mut Self {
     self.verbose = verbose;
     self
   }
@@ -69,18 +70,13 @@ impl ApiRequestBuilder {
     self
   }
 
-  /// Marks this request as the vetted built-in GraphQL request.
-  pub(crate) fn allow_read_only_graphql(&mut self) -> &mut Self {
-    self.trusted_graphql = true;
-    self
-  }
-
   pub(crate) fn body(&mut self, body: RequestBody) -> &mut Self {
     let (body, content_type) = match body {
-      RequestBody::Text(body) => (body, None),
+      RequestBody::Text(body) => (body, None::<&str>),
+      #[cfg(feature = "write-requests")]
       RequestBody::Json(body) => (body, Some("application/json")),
     };
-    self.request.body = Some(body);
+    self.request.body = Some(api_request::Body::TextBody(body));
     if let Some(content_type) = content_type {
       self.default_header("content-type", content_type);
     }
@@ -98,44 +94,46 @@ impl ApiRequestBuilder {
     }
   }
 
-  pub(crate) fn json(mut self) -> Result<Response> {
+  pub(crate) async fn json(mut self) -> Result<ApiResponse> {
     self.default_header("accept", "application/json");
-    self.execute()
+    self.execute().await
   }
 
-  pub(crate) fn text(self) -> Result<Response> {
-    self.execute()
+  pub(crate) async fn text(self) -> Result<ApiResponse> {
+    self.execute().await
   }
 
-  pub(crate) fn download(mut self) -> Result<Response> {
+  pub(crate) async fn download(mut self) -> Result<ApiResponse> {
     self.request.download = true;
-    self.execute()
+    self.execute().await
   }
 
-  fn execute(self) -> Result<Response> {
-    let (_, started) = crate::commands::daemon::ensure_running(None)?;
-
+  async fn execute(self) -> Result<ApiResponse> {
+    let (mut client, _, started) = crate::commands::daemon::ensure_running(None).await?;
     if started && self.verbose {
       eprintln!("started daemon");
     }
+    self.execute_with(&mut client).await
+  }
 
-    let request = if self.trusted_graphql {
-      let request = self.request;
-      Request::Graphql(GraphqlRequest {
-        url: request.url,
-        headers: request.headers,
-        body: request
-          .body
-          .context("trusted GraphQL requests must include a body")?,
-      })
-    } else {
-      Request::Api(self.request)
-    };
-    let response = crate::commands::daemon::send_request(&request)
-      .context("daemon stopped before accepting the request; run the command again")?
-      .context("empty response from the server")?;
+  pub(crate) async fn json_with(
+    mut self,
+    client: &mut crate::commands::daemon::Client,
+  ) -> Result<ApiResponse> {
+    self.default_header("accept", "application/json");
+    self.execute_with(client).await
+  }
 
-    Ok(response)
+  async fn execute_with(self, client: &mut crate::commands::daemon::Client) -> Result<ApiResponse> {
+    let mut request = tonic::Request::new(self.request);
+    request.set_timeout(cnvs_protocol::API_TIMEOUT);
+    Ok(
+      tokio::time::timeout(cnvs_protocol::API_TIMEOUT, client.api(request))
+        .await
+        .context("daemon request timed out; execution outcome may be unknown")?
+        .context("daemon request failed; a submitted write may already have executed")?
+        .into_inner(),
+    )
   }
 
   pub(crate) fn into_request(self) -> ApiRequest {
@@ -158,6 +156,9 @@ mod tests {
     let request = request.into_request();
 
     assert_eq!(request.headers.len(), 2);
-    assert_eq!(request.body.as_deref(), Some(r#"{"ok":true}"#));
+    assert_eq!(
+      request.body,
+      Some(api_request::Body::TextBody(r#"{"ok":true}"#.into()))
+    );
   }
 }

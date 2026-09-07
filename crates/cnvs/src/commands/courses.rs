@@ -15,9 +15,9 @@ pub enum CoursesCommand {
   },
 }
 
-pub(crate) fn run(command: CoursesCommand, verbose: bool) -> Result<i32> {
+pub async fn run(command: CoursesCommand, verbose: bool) -> Result<i32> {
   match command {
-    CoursesCommand::List => api::get("/api/v1/courses", verbose),
+    CoursesCommand::List => api::get("/api/v1/courses", verbose).await,
     CoursesCommand::Get { course_id } => {
       if course_id.is_empty() {
         bail!("course ID cannot be empty");
@@ -28,7 +28,7 @@ pub(crate) fn run(command: CoursesCommand, verbose: bool) -> Result<i32> {
         .path_segments_mut()
         .map_err(|()| anyhow!("could not append course ID to URL"))?
         .push(&course_id);
-      api::get_url(url, verbose)
+      api::get_url(url, verbose).await
     }
   }
 }
@@ -37,14 +37,15 @@ pub(crate) fn run(command: CoursesCommand, verbose: bool) -> Result<i32> {
 mod tests {
   use super::*;
 
-  #[test]
-  fn rejects_empty_course_ids() {
+  #[tokio::test]
+  async fn rejects_empty_course_ids() {
     assert!(run(
       CoursesCommand::Get {
         course_id: String::new()
       },
       false
     )
+    .await
     .is_err());
   }
 }

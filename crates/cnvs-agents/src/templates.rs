@@ -1,7 +1,7 @@
 use cnvs_config::Config;
 use sailfish::TemplateOnce;
 
-pub(crate) struct SkillContext<'a> {
+pub struct SkillContext<'a> {
   pub(crate) config: &'a Config,
   pub(crate) read_only_actions: bool,
 }
@@ -42,7 +42,7 @@ macro_rules! skills {
                 config,
                 read_only_actions,
               },
-            }) as Box<dyn SkillTemplate + '_>
+            })
           }
         ),+
       ]
@@ -56,17 +56,14 @@ skills![
   ("cnvs-assignments", "cnvs-assignments.md"),
 ];
 
-pub(crate) fn render_skills(
-  config: &Config,
-  read_only_actions: bool,
-) -> Vec<(&'static str, String)> {
+pub fn render_skills(config: &Config, read_only_actions: bool) -> Vec<(&'static str, String)> {
   skill_templates(config, read_only_actions)
     .into_iter()
     .filter_map(|template| Some((template.slug(), template.render()?)))
     .collect()
 }
 
-pub(crate) fn render_skill(slug: &str, config: &Config, read_only_actions: bool) -> Option<String> {
+pub fn render_skill(slug: &str, config: &Config, read_only_actions: bool) -> Option<String> {
   render_skills(config, read_only_actions)
     .into_iter()
     .find_map(|(skill_slug, content)| (skill_slug == slug).then_some(content))

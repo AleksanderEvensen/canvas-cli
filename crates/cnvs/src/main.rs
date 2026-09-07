@@ -24,8 +24,9 @@ struct Cli {
   command: commands::Command,
 }
 
-fn main() {
-  match run() {
+#[tokio::main]
+async fn main() {
+  match run().await {
     Ok(code) => std::process::exit(code),
     Err(error) => {
       eprintln!("{error:#}");
@@ -34,9 +35,9 @@ fn main() {
   }
 }
 
-fn run() -> anyhow::Result<i32> {
+async fn run() -> anyhow::Result<i32> {
   let cli = Cli::parse();
-  commands::run(cli.command, cli.verbose)
+  commands::run(cli.command, cli.verbose).await
 }
 
 #[cfg(test)]

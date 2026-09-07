@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use cnvs_config::Config;
 
-#[derive(Subcommand)]
+#[derive(Clone, Copy, Subcommand)]
 pub enum ConfigCommand {
   #[command(about = "Show the config file path and current settings")]
   Info,
@@ -12,7 +12,7 @@ pub enum ConfigCommand {
   Edit,
 }
 
-pub(crate) fn run(command: ConfigCommand) -> Result<i32> {
+pub fn run(command: ConfigCommand) -> Result<i32> {
   match command {
     ConfigCommand::Info => info(),
     ConfigCommand::Edit => edit(),

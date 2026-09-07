@@ -18,7 +18,7 @@ pub struct Skill {
 pub fn list_skills(config: &Config, read_only_actions: bool) -> Vec<Skill> {
   let mut skills = render_skills(config, read_only_actions)
     .into_iter()
-    .filter_map(|(slug, content)| skill_from_content(slug, content, read_only_actions))
+    .filter_map(|(slug, content)| skill_from_content(slug, &content, read_only_actions))
     .collect::<Vec<_>>();
   skills.sort_unstable_by(|left, right| left.slug.cmp(&right.slug));
   skills
@@ -28,10 +28,10 @@ pub fn list_skills(config: &Config, read_only_actions: bool) -> Vec<Skill> {
 #[must_use]
 pub fn get_skill(slug: &str, config: &Config, read_only_actions: bool) -> Option<Skill> {
   let content = render_skill(slug, config, read_only_actions)?;
-  skill_from_content(slug, content, read_only_actions)
+  skill_from_content(slug, &content, read_only_actions)
 }
 
-fn skill_from_content(slug: &str, content: String, read_only_actions: bool) -> Option<Skill> {
+fn skill_from_content(slug: &str, content: &str, read_only_actions: bool) -> Option<Skill> {
   // Injects the name into the frontmatter
   let content = format!("---\nname: {slug}\n{}", content.strip_prefix("---\n")?);
 
@@ -60,7 +60,7 @@ fn extract_frontmatter(content: &str) -> Option<HashMap<String, String>> {
   Some(HashMap::from_iter(
     frontmatter_string
       .lines()
-      .filter_map(|v| v.split_once(":"))
+      .filter_map(|v| v.split_once(':'))
       .map(|(key, value)| (String::from(key.trim()), String::from(value.trim()))),
   ))
 }

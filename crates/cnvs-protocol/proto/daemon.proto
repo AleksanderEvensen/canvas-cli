@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package cnvs.daemon.v1;
+
+service CanvasDaemon {
+  rpc Status(Empty) returns (DaemonStatus);
+  rpc Stop(Empty) returns (Empty);
+  rpc Api(ApiRequest) returns (ApiResponse);
+  rpc Assignments(AssignmentsRequest) returns (ApiResponse);
+}
+
+message Empty {}
+
+enum DaemonState {
+  DAEMON_STATE_UNSPECIFIED = 0;
+  DAEMON_STATE_STARTING = 1;
+  DAEMON_STATE_RUNNING = 2;
+  DAEMON_STATE_STOPPING = 3;
+}
+
+message DaemonStatus {
+  DaemonState state = 1;
+  uint32 pid = 2;
+  bytes profile_path = 3;
+  uint32 protocol_major = 4;
+  string daemon_version = 5;
+  bool write_requests_enabled = 6;
+}
+
+message Header {
+  string name = 1;
+  string value = 2;
+}
+
+message ApiRequest {
+  string method = 1;
+  string url = 2;
+  repeated Header headers = 3;
+  oneof body {
+    string text_body = 4;
+    bytes binary_body = 5;
+  }
+  bool download = 6;
+}
+
+message AssignmentsRequest {
+  string url = 1;
+  string user_id = 2;
+}
+
+message ApiResponse {
+  uint32 status = 1;
+  string status_text = 2;
+  oneof body {
+    string text = 3;
+    bytes binary = 4;
+    bytes local_file_path = 5;
+  }
+}

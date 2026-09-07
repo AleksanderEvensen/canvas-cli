@@ -6,11 +6,11 @@ use std::{
 
 use crate::utilities::{ApiRequestBuilder, RequestBody};
 use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::STANDARD, Engine};
 use clap::Args;
 use cnvs_config::Config;
-use cnvs_protocol::{Header, Response, ResponseBody};
+use cnvs_protocol::{api_response::Body, ApiResponse, Header};
 use serde_json::Value;
+use std::os::unix::ffi::OsStringExt;
 use url::Url;
 
 #[derive(Clone)]
@@ -58,51 +58,41 @@ pub struct ApiArgs {
   output: Option<PathBuf>,
 }
 
-pub(crate) fn get(path: &str, verbose: bool) -> Result<i32> {
-  get_url(resolve_url(path)?, verbose)
+pub async fn get(path: &str, verbose: bool) -> Result<i32> {
+  get_url(resolve_url(path)?, verbose).await
 }
 
-pub(crate) fn get_url(url: Url, verbose: bool) -> Result<i32> {
+pub async fn get_url(url: Url, verbose: bool) -> Result<i32> {
   let mut request = ApiRequestBuilder::get(url);
   request.enable_verbose(verbose);
-  handle_response(request.json()?, verbose, None)
+  handle_response(request.json().await?, verbose, None)
 }
 
-/// Fetches a JSON response for grouped commands without writing the response to stdout.
-pub(crate) fn get_json_url(url: Url, verbose: bool) -> Result<Value> {
-  let mut request = ApiRequestBuilder::get(url);
-  request.enable_verbose(verbose);
-  json_response(request.json()?, verbose)
-}
-
-pub(crate) fn json_response(response: Response, verbose: bool) -> Result<Value> {
-  match response {
-    Response::Api {
-      status,
-      status_text,
-      body,
-    } => {
-      if verbose {
-        eprintln!("{status} {status_text}");
-      }
-      if !(200..300).contains(&status) {
-        let detail = match body {
-          ResponseBody::Text(text) => format!(": {text}"),
-          _ => String::new(),
-        };
-        bail!("HTTP {status} {status_text}{detail}");
-      }
-      let ResponseBody::Text(body) = body else {
-        bail!("expected a JSON text response");
-      };
-      serde_json::from_str(&body).context("Canvas returned invalid JSON")
-    }
-    Response::Error { message } => bail!(message),
-    _ => bail!("daemon returned an unexpected response"),
+pub fn json_response(response: ApiResponse, verbose: bool) -> Result<Value> {
+  validate_response(&response)?;
+  let ApiResponse {
+    status,
+    status_text,
+    body,
+  } = response;
+  let body = body.context("daemon response has no body")?;
+  if verbose {
+    eprintln!("{status} {status_text}");
   }
+  if !(200..300).contains(&status) {
+    let detail = match body {
+      Body::Text(text) => format!(": {text}"),
+      _ => String::new(),
+    };
+    bail!("HTTP {status} {status_text}{detail}");
+  }
+  let Body::Text(body) = body else {
+    bail!("expected a JSON text response");
+  };
+  serde_json::from_str(&body).context("Canvas returned invalid JSON")
 }
 
-pub(crate) fn run(args: ApiArgs, verbose: bool) -> Result<i32> {
+pub async fn run(args: ApiArgs, verbose: bool) -> Result<i32> {
   let output = args.output.clone();
 
   let mut url = resolve_url(&args.url)?;
@@ -136,54 +126,61 @@ pub(crate) fn run(args: ApiArgs, verbose: bool) -> Result<i32> {
   }
 
   let response = match &output {
-    Some(_) => request.download()?,
-    None => request.json()?,
+    Some(_) => request.download().await?,
+    None => request.json().await?,
   };
 
   handle_response(response, verbose, output)
 }
 
-pub(crate) fn handle_response(
-  response: Response,
+pub fn handle_response(
+  response: ApiResponse,
   verbose: bool,
   output: Option<PathBuf>,
 ) -> Result<i32> {
-  match response {
-    Response::Api {
-      status,
-      status_text,
-      body,
-    } => {
-      if verbose {
-        eprintln!("{status} {status_text}");
-      }
-      if !(200..300).contains(&status) {
-        if let ResponseBody::Text(body) = &body {
-          print!("{body}");
-        }
-        eprintln!("HTTP {status} {status_text}");
-        return Ok(1);
-      }
-      if let Some(path) = output {
-        write_output(path, body)?;
-      } else {
-        print_body(body)?;
-        io::stdout().flush()?;
-      }
-      Ok(0)
-    }
-    Response::Error { message } => bail!(message),
-    _ => bail!("daemon returned an unexpected response"),
+  validate_response(&response)?;
+  let ApiResponse {
+    status,
+    status_text,
+    body,
+  } = response;
+  let body = body.context("daemon response has no body")?;
+  if verbose {
+    eprintln!("{status} {status_text}");
   }
+  if !(200..300).contains(&status) {
+    print_body(body)?;
+    io::stdout().flush()?;
+    eprintln!("HTTP {status} {status_text}");
+    return Ok(1);
+  }
+  if let Some(path) = output {
+    write_output(&path, body)?;
+  } else {
+    print_body(body)?;
+    io::stdout().flush()?;
+  }
+  Ok(0)
 }
 
-fn write_output(path: PathBuf, body: ResponseBody) -> Result<()> {
+fn validate_response(response: &ApiResponse) -> Result<()> {
+  if !(100..=599).contains(&response.status) {
+    bail!("daemon returned an invalid HTTP status");
+  }
+  if response.body.is_none() {
+    bail!("daemon response has no body");
+  }
+  Ok(())
+}
+
+fn write_output(path: &Path, body: Body) -> Result<()> {
   match body {
-    ResponseBody::File(source) => {
-      match fs::rename(&source, &path) {
+    Body::LocalFilePath(source) => {
+      let source = PathBuf::from(std::ffi::OsString::from_vec(source));
+      match fs::rename(&source, path) {
         Ok(()) => {}
         Err(error) if error.raw_os_error() == Some(18) => {
-          fs::copy(&source, &path)
+          fs::copy(&source, path)
             .with_context(|| format!("could not copy {}", source.display()))?;
           fs::remove_file(&source)?;
         }
@@ -195,31 +192,25 @@ fn write_output(path: PathBuf, body: ResponseBody) -> Result<()> {
         let _ = fs::remove_dir(directory);
       }
     }
-    ResponseBody::Base64(encoded) => fs::write(
-      &path,
-      STANDARD
-        .decode(encoded)
-        .context("daemon returned invalid base64 data")?,
-    )
-    .with_context(|| format!("could not write {}", path.display()))?,
-    ResponseBody::Text(text) => {
-      fs::write(&path, text).with_context(|| format!("could not write {}", path.display()))?
+    Body::Binary(bytes) => {
+      fs::write(path, bytes).with_context(|| format!("could not write {}", path.display()))?;
+    }
+    Body::Text(text) => {
+      fs::write(path, text).with_context(|| format!("could not write {}", path.display()))?;
     }
   }
   Ok(())
 }
 
-fn print_body(body: ResponseBody) -> Result<()> {
+fn print_body(body: Body) -> Result<()> {
   match body {
-    ResponseBody::Text(text) => print!("{text}"),
-    ResponseBody::Base64(encoded) => io::stdout().write_all(
-      &STANDARD
-        .decode(encoded)
-        .context("daemon returned invalid base64 data")?,
-    )?,
-    ResponseBody::File(source) => {
+    Body::Text(text) => print!("{text}"),
+    Body::Binary(bytes) => io::stdout().write_all(&bytes)?,
+    Body::LocalFilePath(source) => {
+      let source = PathBuf::from(std::ffi::OsString::from_vec(source));
       let mut file = fs::File::open(&source)?;
       io::copy(&mut file, &mut io::stdout())?;
+      io::stdout().flush()?;
       fs::remove_file(&source)?;
       if let Some(directory) = source.parent() {
         let _ = fs::remove_dir(directory);
@@ -253,7 +244,7 @@ fn parse_key_value(value: &str) -> std::result::Result<KeyValue, String> {
     value: value.into(),
   })
 }
-pub(crate) fn resolve_url(value: &str) -> Result<Url> {
+pub fn resolve_url(value: &str) -> Result<Url> {
   if let Ok(url) = Url::parse(value) {
     if url.host().is_some() {
       validate_url(&url)?;
@@ -284,7 +275,7 @@ fn validate_url(url: &Url) -> Result<()> {
   }
   Ok(())
 }
-pub(crate) fn read_input(path: &Path) -> Result<String> {
+pub fn read_input(path: &Path) -> Result<String> {
   if path == Path::new("-") {
     read_stdin()
   } else {

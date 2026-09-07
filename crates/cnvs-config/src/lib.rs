@@ -8,7 +8,7 @@ const CONFIG_FILE: &str = "config.toml";
 
 #[derive(Debug, Default, Deserialize, serde::Serialize)]
 pub struct Config {
-  /// Additional Chrome user-data directories checked after the standard locations.
+  /// Additional Chrome user-data directories checked before the standard locations.
   #[serde(default)]
   pub chrome_user_data_dirs: Vec<PathBuf>,
   /// Host used when a request contains only an absolute path.
@@ -18,11 +18,17 @@ pub struct Config {
 
 impl Config {
   /// Serializes the configuration as TOML.
+  ///
+  /// # Errors
+  /// Returns an error if a configuration value cannot be represented as TOML.
   pub fn serialize(&self) -> Result<String> {
     Ok(toml::to_string_pretty(self)?)
   }
 
   /// Loads the user's configuration, or returns the default configuration when it does not exist.
+  ///
+  /// # Errors
+  /// Returns an error if an existing configuration cannot be read or parsed as TOML.
   pub fn load() -> Result<Self> {
     let Some(path) = config_path() else {
       return Ok(Self::default());

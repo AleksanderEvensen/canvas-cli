@@ -16,7 +16,7 @@ pub enum AgentCommand {
   },
 }
 
-pub(crate) fn run(command: AgentCommand) -> Result<i32> {
+pub fn run(command: AgentCommand) -> Result<i32> {
   match command {
     AgentCommand::Skills { slug } => skills(slug),
   }

@@ -35,15 +35,14 @@ pub struct GqlArgs {
   variables_file: Option<PathBuf>,
 }
 
-pub(crate) fn run(args: GqlArgs, verbose: bool) -> Result<i32> {
+pub async fn run(args: GqlArgs, verbose: bool) -> Result<i32> {
   let url = api::resolve_url(&args.url)?;
-  let query = match args.file {
-    Some(path) => api::read_input(&path)?,
-    None => {
-      let mut query = String::new();
-      std::io::stdin().read_to_string(&mut query)?;
-      query
-    }
+  let query = if let Some(path) = args.file {
+    api::read_input(&path)?
+  } else {
+    let mut query = String::new();
+    std::io::stdin().read_to_string(&mut query)?;
+    query
   };
   if query.trim().is_empty() {
     bail!("GraphQL query is empty");
@@ -61,7 +60,7 @@ pub(crate) fn run(args: GqlArgs, verbose: bool) -> Result<i32> {
     "variables": variables,
   }))?);
 
-  let response = request.json()?;
+  let response = request.json().await?;
   api::handle_response(response, verbose, None)
 }
 

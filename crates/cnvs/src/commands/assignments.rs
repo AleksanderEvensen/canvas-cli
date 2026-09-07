@@ -2,13 +2,13 @@ use std::{cmp::Ordering, collections::HashSet, time::SystemTime};
 
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
-use cnvs_protocol::ASSIGNMENTS_QUERY;
+use cnvs_protocol::AssignmentsRequest;
 use comfy_table::{presets::UTF8_FULL, ContentArrangement, Table};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use crate::utilities::{ApiRequestBuilder, RequestBody};
+use crate::utilities::ApiRequestBuilder;
 
 use super::api;
 
@@ -31,7 +31,7 @@ pub enum AssignmentsCommand {
   },
 }
 
-pub(crate) fn run(command: AssignmentsCommand, verbose: bool) -> Result<i32> {
+pub async fn run(command: AssignmentsCommand, verbose: bool) -> Result<i32> {
   match command {
     AssignmentsCommand::List {
       course,
@@ -39,7 +39,7 @@ pub(crate) fn run(command: AssignmentsCommand, verbose: bool) -> Result<i32> {
       hide_submitted,
       json,
     } => {
-      let mut records = fetch_records(course.as_deref(), verbose)?;
+      let mut records = fetch_records(course.as_deref(), verbose).await?;
       let now = current_timestamp()?;
       if !past {
         records.retain(|record| record.due_date().is_some_and(|due| due > now));
@@ -181,10 +181,22 @@ impl AssignmentRecord {
   }
 }
 
-fn fetch_records(course_filter: Option<&str>, verbose: bool) -> Result<Vec<AssignmentRecord>> {
-  let user = api::get_json_url(api::resolve_url("/api/v1/users/self")?, verbose)?;
+async fn fetch_records(
+  course_filter: Option<&str>,
+  verbose: bool,
+) -> Result<Vec<AssignmentRecord>> {
+  let (mut client, _, started) = super::daemon::ensure_running(None).await?;
+  if started && verbose {
+    eprintln!("started daemon");
+  }
+  let user = api::json_response(
+    ApiRequestBuilder::get(api::resolve_url("/api/v1/users/self")?)
+      .json_with(&mut client)
+      .await?,
+    verbose,
+  )?;
   let user_id = extract_user_id(&user)?;
-  let response = fetch_graphql(&user_id, verbose)?;
+  let response = fetch_graphql(&mut client, &user_id, verbose).await?;
   let data = parse_graphql_data(&response)?;
   let user = data
     .user
@@ -236,16 +248,20 @@ fn ensure_complete(connection: &GraphqlAssignmentConnection, course: &Course) ->
   Ok(())
 }
 
-fn fetch_graphql(user_id: &str, verbose: bool) -> Result<Value> {
-  let mut request = ApiRequestBuilder::post(api::resolve_url("/api/graphql")?);
-  request
-    .enable_verbose(verbose)
-    .allow_read_only_graphql()
-    .body(RequestBody::json(json!({
-      "query": ASSIGNMENTS_QUERY,
-      "variables": { "userId": user_id },
-    }))?);
-  api::json_response(request.json()?, verbose)
+async fn fetch_graphql(
+  client: &mut super::daemon::Client,
+  user_id: &str,
+  verbose: bool,
+) -> Result<Value> {
+  let mut request = tonic::Request::new(AssignmentsRequest {
+    url: api::resolve_url("/api/graphql")?.into(),
+    user_id: user_id.into(),
+  });
+  request.set_timeout(cnvs_protocol::API_TIMEOUT);
+  let response = tokio::time::timeout(cnvs_protocol::API_TIMEOUT, client.assignments(request))
+    .await??
+    .into_inner();
+  api::json_response(response, verbose)
 }
 
 fn parse_graphql_data(value: &Value) -> Result<GraphqlData> {
@@ -468,6 +484,58 @@ mod tests {
       lock_info: Some(GraphqlLockInfo { is_locked: false }),
       submission: None,
     }
+  }
+
+  #[test]
+  fn preserves_sorting_filters_and_json_timestamp_contract() {
+    let course = Course {
+      id: 42,
+      code: Some("ABC".into()),
+      name: "Course".into(),
+    };
+    assert!(course_matches(&course, Some("42")));
+    assert!(course_matches(&course, Some("ABC")));
+    assert!(!course_matches(&course, Some("other")));
+    let mut records = Vec::new();
+    for (name, due) in [
+      ("Z", None),
+      ("B", Some("2026-09-08T10:00:00+02:00")),
+      ("A", Some("2026-09-08T08:00:00Z")),
+      ("Earlier", Some("2026-09-07T12:00:00Z")),
+    ] {
+      let mut assignment = assignment();
+      assignment.name = Some(name.into());
+      assignment.due_at = due.map(str::to_owned);
+      assignment.submission = Some(GraphqlSubmissionConnection {
+        nodes: Some(vec![Some(GraphqlSubmission {
+          state: Some("graded".into()),
+          submitted_at: Some("2026-09-06T12:34:56.123Z".into()),
+          score: Some(1.0),
+          grade: Some("pass".into()),
+          graded_at: Some("2026-09-07T08:00:00+02:00".into()),
+        })]),
+      });
+      records.push(normalize(&course, assignment).unwrap());
+    }
+    records.sort_by(compare_records);
+    assert_eq!(
+      records
+        .iter()
+        .map(|r| r.assignment.as_str())
+        .collect::<Vec<_>>(),
+      ["Earlier", "A", "B", "Z"]
+    );
+    let output = serde_json::to_value(&records).unwrap();
+    assert_eq!(
+      output[2],
+      serde_json::json!({
+        "course": "ABC", "courseId": 42, "assignment": "B", "assignmentId": 1,
+        "dueAt": "2026-09-08T10:00:00+02:00", "pointsPossible": 1.0,
+        "status": "graded", "submittedAt": "2026-09-06T12:34:56.123Z", "score": 1.0,
+        "grade": "pass", "gradedAt": "2026-09-07T08:00:00+02:00",
+      })
+    );
+    assert!(output[3]["dueAt"].is_null());
   }
 
   #[test]
