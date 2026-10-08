@@ -8,9 +8,13 @@ use cnvs_config::Config;
 
 pub const PROFILE_ENV: &str = "CNVS_CHROME_USER_DATA_DIR";
 pub const CONFIG_DIR: &str = ".cnvs";
+pub const LOG_FILE: &str = "daemon.log";
 pub const SOCKET_FILE: &str = "daemon.sock";
 
 /// Gets the path to the unix socket file
+///
+/// # Errors
+/// Returns an error when the home directory cannot be determined.
 #[inline]
 pub fn daemon_socket_path() -> Result<PathBuf> {
   Ok(
@@ -21,6 +25,24 @@ pub fn daemon_socket_path() -> Result<PathBuf> {
   )
 }
 
+/// Gets the path to the daemon log file
+///
+/// # Errors
+/// Returns an error when the home directory cannot be determined.
+#[inline]
+pub fn daemon_log_path() -> Result<PathBuf> {
+  Ok(
+    dirs::home_dir()
+      .context("could not determine home directory")?
+      .join(CONFIG_DIR)
+      .join(LOG_FILE),
+  )
+}
+
+/// Resolves the requested Chrome profile from an explicit path, the environment, or nothing.
+///
+/// # Errors
+/// Returns an error when an explicitly or environmentally requested profile path is invalid.
 pub fn requested_profile(explicit: Option<PathBuf>) -> Result<Option<PathBuf>> {
   explicit
     .or_else(|| env::var_os(PROFILE_ENV).map(PathBuf::from))
@@ -28,6 +50,10 @@ pub fn requested_profile(explicit: Option<PathBuf>) -> Result<Option<PathBuf>> {
     .transpose()
 }
 
+/// Discovers an installed Chrome-like browser profile.
+///
+/// # Errors
+/// Returns an error when the home directory cannot be determined or configuration fails to load.
 pub fn discover_profile() -> Result<PathBuf> {
   let home = dirs::home_dir().context("could not determine home directory")?;
   let config = Config::load()?;

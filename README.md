@@ -122,6 +122,12 @@ cnvs daemon stop
 
 `start` and `stop` are idempotent. `status` reports the state, PID, and browser profile; it exits nonzero when stopped. Startup waits up to one minute for Chrome approval. If that wait expires, the pending daemon remains available for later approval or `cnvs daemon stop`.
 
+The daemon appends diagnostic logs to `~/.cnvs/daemon.log` (owner-only access).
+Set `RUST_LOG` before starting the daemon to change verbosity; the default is
+`info`. Request URLs, headers, and bodies are not logged by the daemon's request
+logging. Logs are not automatically rotated; stop the daemon before removing or
+archiving the log, then restart it.
+
 ## Canvas endpoint documentation
 
 - REST API index: <https://canvas.instructure.com/doc/api/>

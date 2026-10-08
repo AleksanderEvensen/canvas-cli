@@ -48,7 +48,12 @@ impl ChromeDeveloperProtocol {
       };
 
       match message {
-        Message::Text(text) => return Ok(Some(serde_json::from_str(&text)?)),
+        Message::Text(text) => {
+          let event: Value = serde_json::from_str(&text)?;
+          let method = event.get("method").and_then(Value::as_str).unwrap_or("?");
+          tracing::trace!(method, "CDP event received");
+          return Ok(Some(event));
+        }
         Message::Ping(payload) => self.ws.send(Message::Pong(payload)).await?,
         Message::Close(_) => {
           self.closed = true;
@@ -78,6 +83,7 @@ impl ChromeDeveloperProtocol {
         .context("CDP request is not an object")?
         .insert("sessionId".into(), json!(session_id));
     }
+    tracing::debug!(id, method, "CDP call sent");
     self
       .ws
       .send(Message::Text(request.to_string().into()))
@@ -91,8 +97,10 @@ impl ChromeDeveloperProtocol {
         continue;
       }
       if let Some(error) = response.get("error") {
+        tracing::debug!(id, method, "CDP call returned an error");
         bail!("CDP {method} failed: {error}");
       }
+      tracing::debug!(id, method, "CDP response received");
       return response
         .get("result")
         .cloned()
@@ -165,6 +173,7 @@ impl ChromeDeveloperProtocol {
         .context("request timed out")??
         .context("Chrome closed the CDP connection")?;
       if event.get("method").and_then(Value::as_str) == Some(method) && matches(&event) {
+        tracing::debug!(method, "CDP event matched");
         return event
           .get("params")
           .cloned()

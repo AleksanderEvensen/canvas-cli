@@ -17,7 +17,7 @@ use std::{
   collections::HashSet,
   os::unix::{
     ffi::{OsStrExt, OsStringExt},
-    fs::PermissionsExt,
+    fs::{OpenOptionsExt, PermissionsExt},
   },
   path::{Path, PathBuf},
   sync::Arc,
@@ -110,9 +110,62 @@ impl CanvasDaemon for Service {
   }
 }
 
+/// Runs the daemon until stopped.
+///
+/// # Errors
+/// Returns an error when logging cannot be initialized, the socket cannot be owned, or the
+/// transport or browser worker fails.
 pub async fn run(profile: PathBuf) -> Result<()> {
+  let result = run_daemon(profile).await;
+  if let Err(error) = &result {
+    tracing::error!(error = format!("{error:#}"), "daemon stopped");
+  }
+  result
+}
+
+/// Initializes file logging to `~/.cnvs/daemon.log`. Verbosity follows `RUST_LOG` (default `info`).
+fn init_logging() -> Result<()> {
+  let path = profile::daemon_log_path()?;
+  // The owner has already validated and secured the parent directory.
+  let file = open_log(&path)?;
+  let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+  tracing_subscriber::fmt()
+    .with_env_filter(filter)
+    .with_writer(std::sync::Mutex::new(file))
+    .with_ansi(false)
+    .try_init()
+    .map_err(|error| anyhow::anyhow!("could not initialize daemon logging: {error}"))?;
+  Ok(())
+}
+
+fn open_log(path: &Path) -> Result<std::fs::File> {
+  let file = std::fs::OpenOptions::new()
+    .create(true)
+    .append(true)
+    .mode(0o600)
+    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+    .open(path)
+    .with_context(|| format!("could not open daemon log file {}", path.display()))?;
+  let metadata = file.metadata()?;
+  ownership::check_owned(&metadata)?;
+  if !metadata.is_file() {
+    anyhow::bail!("daemon log is not a regular file");
+  }
+  file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+  Ok(file)
+}
+
+async fn run_daemon(profile: PathBuf) -> Result<()> {
   let socket = daemon_socket_path()?;
   let mut owner = ownership::Owner::acquire(&socket).await?;
+  init_logging()?;
+  tracing::info!(
+    pid = std::process::id(),
+    profile = %profile.display(),
+    socket = %socket.display(),
+    "daemon starting"
+  );
   let listener = UnixListener::bind(&socket)?;
   owner.bound()?;
   // Keep completed handoffs until a later safely owned startup: the CLI may still
@@ -157,15 +210,14 @@ async fn run_listener(
   // Dropping this sender forcibly closes connection I/O, including Tonic's
   // independently spawned connection tasks, only after the worker has joined.
   let (_connection_lifetime, closed) = watch::channel(());
+  let (accept_failed, mut accept_failure) = oneshot::channel();
   let incoming = futures_util::stream::unfold(
-    (listener, connections, closed),
-    |(listener, connections, closed)| async move {
+    (listener, connections, closed, accept_failed),
+    |(listener, connections, closed, accept_failed)| async move {
       let permit = connections.clone().acquire_owned().await.ok()?;
       let mut connection_closed = closed.clone();
-      let accepted = listener
-        .accept()
-        .await
-        .map(|(stream, _)| LimitedConnection {
+      let accepted = match listener.accept().await {
+        Ok((stream, _)) => LimitedConnection {
           stream,
           is_closed: false,
           closed: Box::pin(async move {
@@ -174,8 +226,16 @@ async fn run_listener(
           _permit: permit,
           admitted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
           admission_deadline: Box::pin(tokio::time::sleep(cnvs_protocol::CONNECT_TIMEOUT)),
-        });
-      Some((accepted, (listener, connections, closed)))
+        },
+        Err(error) => {
+          let _ = accept_failed.send(error);
+          return None;
+        }
+      };
+      Some((
+        Ok::<_, std::io::Error>(accepted),
+        (listener, connections, closed, accept_failed),
+      ))
     },
   );
   let server = tonic::transport::Server::builder()
@@ -193,12 +253,27 @@ async fn run_listener(
     .serve_with_incoming_shutdown(incoming, async move {
       let _ = finish.wait_for(|done| *done).await;
     });
+  let server = async move {
+    tokio::select! {
+      result = server => {
+        // EOF may complete the server in the same poll that reports an accept failure.
+        if let Ok(error) = accept_failure.try_recv() {
+          return Err(error).context("daemon socket accept failed");
+        }
+        result.context("daemon transport failed")
+      },
+      Ok(error) = &mut accept_failure => Err(error).context("daemon socket accept failed"),
+    }
+  };
   tokio::pin!(server);
   let result = tokio::select! {
     result = &mut server => {
+      // Let bounded in-flight work finish and restore browser/download state before exit.
       state.send_replace(DaemonState::Stopping);
-      worker.await??;
-      result.context("daemon transport failed")
+      let cleanup = worker.await;
+      result?;
+      cleanup??;
+      Ok(())
     }
     result = &mut worker => {
       // Browser cleanup is complete before a forced transport shutdown is allowed.
@@ -219,9 +294,19 @@ async fn browser_worker(
 ) -> Result<()> {
   let mut changes = state.subscribe();
   let endpoint = endpoint?;
+  tracing::info!("connecting to Chrome DevTools");
   let mut cdp = tokio::select! {
-    result = ChromeDeveloperProtocol::connect(&endpoint) => result?,
-    () = async { let _ = changes.wait_for(|s| *s == DaemonState::Stopping).await; } => return Ok(()),
+    result = ChromeDeveloperProtocol::connect(&endpoint) => {
+      let cdp = result.inspect_err(|error| {
+        tracing::warn!(error = format!("{error:#}"), "Chrome connection failed");
+      })?;
+      tracing::info!("connected to Chrome; daemon is running");
+      cdp
+    }
+    () = async { let _ = changes.wait_for(|s| *s == DaemonState::Stopping).await; } => {
+      tracing::info!("stop requested before Chrome connected");
+      return Ok(());
+    }
   };
   state.send_if_modified(|s| {
     if *s == DaemonState::Starting {
@@ -238,8 +323,14 @@ async fn browser_worker(
   while *state.borrow() == DaemonState::Running {
     tokio::select! {
       biased;
-      () = async { let _ = changes.wait_for(|s| *s == DaemonState::Stopping).await; } => break,
-      () = tokio::time::sleep_until(idle) => break,
+      () = async { let _ = changes.wait_for(|s| *s == DaemonState::Stopping).await; } => {
+        tracing::info!("stop requested; stopping worker");
+        break;
+      }
+      () = tokio::time::sleep_until(idle) => {
+        tracing::info!("idle timeout reached; stopping worker");
+        break;
+      }
       item = queue.recv() => {
         let Some(item) = item else { break; };
         if item.reply.is_closed() { continue; }
@@ -247,18 +338,30 @@ async fn browser_worker(
         // SIMPLIFIED: one browser request at a time because the CDP reader is not multiplexed;
         // introduce a dedicated CDP response dispatcher before allowing concurrent browser work.
         // This future belongs to the worker, never the cancellable RPC handler.
-        let result = request::execute(&mut cdp, &item.request, &mut targets, item.deadline, downloads).await.map_err(|e| {
+        let result = request::execute(&mut cdp, &item.request, &mut targets, item.deadline, downloads).await;
+        if result.is_err() {
+          // Browser errors may include URLs, tokens, or response data. Return details only to the caller.
+          tracing::warn!("request failed");
+        }
+        let result = result.map_err(|e| {
           if cdp.closed { Status::unavailable("Chrome connection closed") }
-          else if Instant::now() >= item.deadline { Status::deadline_exceeded("browser execution deadline exceeded") }
+          else if e.is::<tokio::time::error::Elapsed>() || Instant::now() >= item.deadline { Status::deadline_exceeded("browser execution deadline exceeded") }
           else { Status::internal(format!("{e:#}")) }
         });
         if let Err(Ok(response)) = item.reply.send(result) { cleanup_undelivered(response); }
         idle = Instant::now().checked_add(IDLE_TIMEOUT).context("idle deadline overflow")?;
-        if cdp.closed { break; }
+        if cdp.closed {
+          tracing::warn!("Chrome connection closed; stopping worker");
+          break;
+        }
       }
-      event = cdp.next_json() => if !matches!(event, Ok(Some(_))) { break; },
+      event = cdp.next_json() => if !matches!(event, Ok(Some(_))) {
+        tracing::warn!("Chrome event stream ended; stopping worker");
+        break;
+      },
     }
   }
+  tracing::info!("browser worker stopped");
   state.send_replace(DaemonState::Stopping);
   queue.close();
   while let Some(item) = queue.recv().await {
@@ -278,6 +381,47 @@ fn cleanup_undelivered(response: ApiResponse) {
     if let Some(parent) = path.parent() {
       let _ = std::fs::remove_dir(parent);
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn log_file_is_private_and_rejects_symlinks_and_special_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("daemon.log");
+    let file = open_log(&path).unwrap();
+    assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    drop(file);
+    std::fs::remove_file(&path).unwrap();
+    let target = directory.path().join("target");
+    std::fs::write(&target, "preserve").unwrap();
+    std::os::unix::fs::symlink(&target, &path).unwrap();
+    assert!(open_log(&path).is_err());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "preserve");
+    std::fs::remove_file(&path).unwrap();
+    let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    assert!(open_log(&path).is_err());
+  }
+
+  #[tokio::test]
+  async fn worker_failure_is_not_reported_as_successful_shutdown() {
+    let directory = tempfile::tempdir().unwrap();
+    let listener = UnixListener::bind(directory.path().join("daemon.sock")).unwrap();
+    let result = timeout(
+      Duration::from_secs(2),
+      run_listener(
+        listener,
+        directory.path().to_owned(),
+        Err(anyhow::anyhow!("scripted endpoint failure")),
+        directory.path().to_owned(),
+      ),
+    )
+    .await
+    .unwrap();
+    assert!(format!("{:#}", result.unwrap_err()).contains("scripted endpoint failure"));
   }
 }
 

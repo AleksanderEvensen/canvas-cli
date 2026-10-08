@@ -13,6 +13,16 @@ use url::Url;
 
 use crate::cdp::ChromeDeveloperProtocol;
 
+/// Ceiling for cheap browser calls (target attach, origin checks) on top of the request deadline.
+const QUICK_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// Ceiling for navigation and page-load waits; heavy pages may legitimately take a while.
+const NAVIGATION_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Returns the earlier of `deadline` and now plus `cap`.
+fn capped(deadline: Instant, cap: Duration) -> Instant {
+  deadline.min(Instant::now().checked_add(cap).unwrap_or(deadline))
+}
+
 pub fn assignments_request(request: AssignmentsRequest) -> Result<ApiRequest> {
   let url = Url::parse(&request.url).context("invalid GraphQL URL")?;
   origin(&url)?;
@@ -81,11 +91,22 @@ pub async fn execute(
 ) -> Result<ApiResponse> {
   // Reload configuration for every request so daemon-side options do not become stale.
   let _config = cnvs_config::Config::load()?;
+  tracing::info!(
+    method = %request.method,
+    download = request.download,
+    "handling request"
+  );
+  let started = Instant::now();
   let url = Url::parse(&request.url).context("invalid request URL")?;
   let wanted_origin = origin(&url)?;
 
   let targets = cdp
-    .call_before(deadline, "Target.getTargets", json!({}), None)
+    .call_before(
+      capped(deadline, QUICK_CALL_TIMEOUT),
+      "Target.getTargets",
+      json!({}),
+      None,
+    )
     .await?;
   let target_infos = targets
     .get("targetInfos")
@@ -97,6 +118,7 @@ pub async fn execute(
     .map(str::to_owned)
     .collect();
   owned_targets.retain(|target| live_targets.contains(target));
+  tracing::debug!(targets = live_targets.len(), "listed browser targets");
 
   let existing = target_infos.iter().find_map(|target| {
     (target["type"].as_str() == Some("page")
@@ -111,11 +133,12 @@ pub async fn execute(
   });
 
   let (target_id, created) = if let Some(target) = existing {
+    tracing::info!(target = %target, "reusing existing browser target");
     (target, false)
   } else {
     let result = cdp
       .call_before(
-        deadline,
+        capped(deadline, QUICK_CALL_TIMEOUT),
         "Target.createTarget",
         json!({ "url": "about:blank" }),
         None,
@@ -126,13 +149,14 @@ pub async fn execute(
       .and_then(Value::as_str)
       .context("Target.createTarget returned no targetId")?
       .to_owned();
+    tracing::info!(target = %target, "created new browser target");
     owned_targets.insert(target.clone());
     (target, true)
   };
 
   let attached = cdp
     .call_before(
-      deadline,
+      capped(deadline, QUICK_CALL_TIMEOUT),
       "Target.attachToTarget",
       json!({ "targetId": target_id, "flatten": true }),
       None,
@@ -143,6 +167,7 @@ pub async fn execute(
     .and_then(Value::as_str)
     .context("Target.attachToTarget returned no sessionId")?
     .to_owned();
+  tracing::debug!(session = %session_id, "attached to target");
 
   let result = async {
     prepare_target(cdp, &wanted_origin, &session_id, created, deadline).await?;
@@ -164,6 +189,10 @@ pub async fn execute(
   )
   .await;
   cdp.clear_pending_events();
+  tracing::info!(
+    elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    "request finished"
+  );
   result
 }
 
@@ -175,12 +204,19 @@ async fn prepare_target(
   deadline: Instant,
 ) -> Result<()> {
   if created {
+    tracing::info!(origin = wanted_origin, "navigating new target");
+    let navigation_deadline = capped(deadline, NAVIGATION_TIMEOUT);
     cdp
-      .call_before(deadline, "Page.enable", json!({}), Some(session_id))
+      .call_before(
+        navigation_deadline,
+        "Page.enable",
+        json!({}),
+        Some(session_id),
+      )
       .await?;
     let navigation = cdp
       .call_before(
-        deadline,
+        navigation_deadline,
         "Page.navigate",
         json!({ "url": format!("{wanted_origin}/") }),
         Some(session_id),
@@ -190,20 +226,27 @@ async fn prepare_target(
       bail!("could not navigate to {wanted_origin}: {error}");
     }
     cdp
-      .wait_for_event_before(deadline, "Page.loadEventFired", session_id)
+      .wait_for_event_before(navigation_deadline, "Page.loadEventFired", session_id)
       .await?;
+    tracing::debug!(origin = wanted_origin, "page load completed");
   }
 
-  let current_origin = evaluate_before(cdp, deadline, session_id, "location.origin")
-    .await?
-    .as_str()
-    .map(str::to_owned)
-    .context("could not determine page origin")?;
+  let current_origin = evaluate_before(
+    cdp,
+    capped(deadline, QUICK_CALL_TIMEOUT),
+    session_id,
+    "location.origin",
+  )
+  .await?
+  .as_str()
+  .map(str::to_owned)
+  .context("could not determine page origin")?;
   if current_origin != wanted_origin {
     bail!(
       "expected a page on {wanted_origin}, but Chrome ended up on {current_origin}; the site may have redirected to login/SSO"
     );
   }
+  tracing::debug!(origin = wanted_origin, "origin verified");
   Ok(())
 }
 
@@ -234,6 +277,10 @@ async fn run_in_target(
     .saturating_duration_since(Instant::now())
     .as_millis()
     .max(1);
+  tracing::debug!(
+    remaining_ms = u64::try_from(remaining_ms).unwrap_or(u64::MAX),
+    "evaluating fetch in page"
+  );
   let expression = format!(
     r#"
       (async () => {{
@@ -263,7 +310,7 @@ async fn run_in_target(
   );
   let result = evaluate_before(cdp, deadline, session_id, &expression).await?;
 
-  Ok(ApiResponse {
+  let response = ApiResponse {
     status: result
       .get("status")
       .and_then(Value::as_u64)
@@ -282,7 +329,9 @@ async fn run_in_target(
         .context("fetch returned no body")?
         .to_owned(),
     )),
-  })
+  };
+  tracing::info!(status = response.status, "fetch completed");
+  Ok(response)
 }
 
 async fn download_in_target(
@@ -436,6 +485,19 @@ fn origin(url: &Url) -> Result<String> {
 mod tests {
   use super::*;
 
+  #[test]
+  fn call_caps_never_extend_request_deadlines() {
+    let now = Instant::now();
+    let short = now + Duration::from_secs(1);
+    assert_eq!(capped(short, QUICK_CALL_TIMEOUT), short);
+    let long = now + Duration::from_secs(300);
+    let limited = capped(long, QUICK_CALL_TIMEOUT);
+    assert!(limited >= now + QUICK_CALL_TIMEOUT);
+    assert!(limited <= Instant::now() + QUICK_CALL_TIMEOUT);
+    assert!(limited < long);
+    assert_eq!(capped(now, NAVIGATION_TIMEOUT), now);
+  }
+
   async fn browser_payload_peer(listener: tokio::net::TcpListener) {
     use futures_util::{SinkExt, StreamExt};
     use std::{
@@ -467,11 +529,13 @@ mod tests {
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o700
           );
-          fs::write(
-            path.join(std::ffi::OsString::from_vec(vec![b'f', 255])),
-            [0, 255, 128],
-          )
-          .unwrap();
+          // macOS filesystems reject invalid UTF-8 names; exercise raw bytes on Linux.
+          let filename = if cfg!(target_os = "macos") {
+            std::ffi::OsString::from("f-é")
+          } else {
+            std::ffi::OsString::from_vec(vec![b'f', 255])
+          };
+          fs::write(path.join(filename), [0, 255, 128]).unwrap();
           directory = Some(path);
           if attempts == 1 {
             json!({"error": {"message": "scripted failure"}})
